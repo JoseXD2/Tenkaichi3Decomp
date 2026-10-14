@@ -1,150 +1,199 @@
-# Tenkaichi3Decomp
+<p align="center">
+  <img src="port/android/art/banner.png" alt="Dragon Rage" width="640">
+</p>
 
-A native PC port of **Dragon Ball Z: Budokai Tenkaichi 3** (PlayStation 2, USA release, SLUS-21678), built on
-the matching decompilation in **BT3-Decompiled**. It is the game's own code compiled for PC, with a new
-renderer, sound and input layer underneath; it is not an emulator.
+<h1 align="center">Dragon Rage</h1>
 
-This repository contains **no game data**. You need your own disc image of that release: the setup reads the
-game's data from it, and it stays on your computer.
+<p align="center">
+  <b>Dragon Ball Z: Budokai Tenkaichi 3</b> running natively on Android phones<br>
+  Built on <a href="https://github.com/z3xox/Tenkaichi3Decomp">Tenkaichi3Decomp</a> · Android today, iOS planned
+</p>
 
-## What works
+<p align="center">
+  <a href="../../releases">Download</a> ·
+  <a href="#getting-started">Getting started</a> ·
+  <a href="#building">Building</a> ·
+  <a href="#português">Português</a>
+</p>
 
-- The whole game loop: boot, opening movie, menus, saving, fights, split screen.
-- A GPU renderer (Vulkan) with the PS2's effects (outline, glow, depth tint, distance blur), each switchable.
-  An OpenGL 3.3 renderer draws the same picture for machines without a working Vulkan (F1, Video, Renderer; it
-  is also tried by itself when Vulkan cannot start). It is slower than Vulkan.
-- Internal resolution from 1x to 8x; 4:3, 16:9, 21:9 and wider without stretching the fight.
-- Smooth motion (experimental, off by default; F1, Video, or F9): the game computes a fight 30 times a second, as
-  on the console; with this the renderer draws pictures in between, for 60, 120 or 240 a second. The fight itself,
-  replays and online play are unchanged, and the two players of an online match need not agree on it. The newest
-  picture reaches the screen 17 to 29 ms later than without. Known limits: pictures are left out at camera cuts
-  and where the camera would pass through scenery; 240 is uneven; little tested with OpenGL. Works in both halves
-  of a split screen.
-- Music, voices and sound effects; keyboard and controllers, fully rebindable; two players.
-- Clashes: Square counts as a direction (off by default; F1, Controls): in a clash of two beams or two rushes the
-  game counts newly pressed directions, which is why the stick is turned; with this each press of Square counts as
-  one, as a tap of the d-pad does. It changes only your own pad, so it can be used online. A press can be made to
-  count for 1, 1.5, 1.75 or 2 (1.75 unless set: the d-pad has four buttons to tap in turn, Square is one).
-- Texture packs made for PCSX2 (`.dds` or `.png`): copied into the `textures` folder next to the game, they are used as they are.
-- Stages and music from outside the disc: a stage model (`.unk`) dropped into the `stages` folder next to the
-  game, or a song (`.mp3`, converted in the background when the game starts, or `.adx`) into `songs`, is added to the stage select, its name written in the game's own
-  lettering (cut from the disc's name pictures while the game runs). They are not written to the save and are
-  not offered in an online match. See [docs/port/adding_stages.md](docs/port/adding_stages.md) and
-  [adding_songs.md](docs/port/adding_songs.md).
-- In the game, **F1** opens the settings, or **START + SELECT** on a controller (which also works the window: d-pad and
-  Cross, Circle to leave, L1 / R1 for the tabs). Controls has a row to choose another key or button. **Esc** asks
-  before it closes the game, and the window has an "Exit game" button. Its Cheats tab has "Unlock everything" (a debug function the game's
-  developers left in: all characters, stages, music, items and Zenni).
+---
 
-- **Online play, experimental** (from release 0.1.8): the main menu's hidden "Dragon Net Battle"
-  entry is back and opens a small window. One player hosts and gets a six-character room code, the other joins
-  with the code: no port forwarding (from 0.1.16; hosting on a port and joining by address is still there);
-  both get the same roster with everything unlocked, each sees their own fighter's view full screen, and leaving
-  the match puts each player back where they were with their own save. Linux and Windows play against each
-  other. With rollback (the host chooses how many frames, and the input delay) your own moves come out at once
-  and the game corrects itself when the other player's buttons arrive.
-  The host also chooses the battle (single, team, or DP battle with a limit of 10, 15 or 20) and the time limit.
-  Each player sees their own gauges on the left with the players' names under them, and hears the voice language
-  chosen in their own save.
+Dragon Rage is a mobile port of [Tenkaichi3Decomp](https://github.com/z3xox/Tenkaichi3Decomp), the native PC port
+of Budokai Tenkaichi 3 (PlayStation 2, USA release, SLUS-21678). The game's own decompiled code is compiled for
+ARM64. It is **not an emulator**, so the processor has little to do and the graphics chip does most of the work.
 
-Online play is new. It has been played over the internet between a Linux and a Windows machine. The input delay
-is chosen from the connection when a match starts (or set by the host), both players need the same release (the
-game says so when they differ; 0.1.10 does not play against 0.1.8 / 0.1.9, and 0.1.15 does not play against
-0.1.14 and earlier). F1, Video has a meter for the frame rate and, in a match, the ping, rollbacks and waits. The 32-bit
-Linux build has no rollback. [docs/netplay_notes.md](docs/netplay_notes.md) is the working log of how it is built
-and what was checked.
+> **No game data is included.** You need an `.iso` of your own disc of the USA release (SLUS-21678). The app takes
+> the game's files out of it on your phone, and nothing is downloaded. Share only the app (APK), never the ISO or
+> the game data.
 
-Room codes go through a small matchmaking service (a Cloudflare Worker; its whole source is in
-[port/matchmaking](port/matchmaking), and `BT3_MATCH_URL` points the game at another copy of it). The game tells it
-the name typed in the window and the addresses it can be reached at; the service keeps them with the room for at
-most ten minutes and hands them to the player who enters the code. The two games then send to each other
-directly. Where the routers do not allow that, the match goes through a relay (Cloudflare's TURN service), which
-passes the match's packets (the buttons pressed) on and keeps nothing. Without a room code none of this is used.
+## Features
 
-See [docs/port/README.md](docs/port/README.md) for the running log of what is done, what is verified and what is not.
+- **Launcher** in the style of the game's own settings window. It follows the phone's language (English,
+  Português, Español) and has Play, Settings, Mods and About.
+- **Graphics**:
+  - internal resolution from 1x to 8x
+  - full-screen widescreen, or 4:3, 16:10, 16:9 and 21:9
+  - the PS2's effects (outline, glow, depth tint, blurs), each one switchable
+  - texture packs made for PCSX2
+- **Performance**:
+  - a profile chosen from the graphics chip (Mali, Adreno, Xclipse, Immortalis, PowerVR)
+  - Smooth motion at 60/120/240
+  - frame skipping
+  - Fast depth
+  - sustained performance mode
+  - a compatibility mode for drivers that misbehave
+- **Controls**:
+  - a PS2 pad on the touch screen that can be resized, moved and made see-through, and hides itself when a
+    controller is connected
+  - Bluetooth and USB controllers
+- **Mods**: each one in its own folder, switched on and off and put in order in the launcher, or imported from a
+  `.zip`.
+- **Discord Rich Presence** shows the screen you are on: menus, Story mode saga, shop, Mission 100, fights with
+  their timer. It can be switched off.
+- **Online** play from the PC port, with rollback: direct IP, or room codes through the matchmaking service when it
+  accepts the build.
 
 ## Requirements
 
-- A 64-bit x86 processor and a graphics card with Vulkan support. Most of the work is on the processor (the
-  game's arithmetic is reproduced exactly as on the PS2); a recent mid-range CPU is recommended.
-- Linux (glibc 2.35 or newer) or Windows 10 / 11.
-- macOS on Apple Silicon: **experimental**, built from source only (see below).
-- About 4 GB of disc space, and your disc image as an `.iso` file.
-
-## Installing a release
-
-Unpack the release, start `Tenkaichi3Decomp-setup` (`Tenkaichi3Decomp-setup.exe` on Windows), choose your disc image, press Play. The
-setup checks that the image is the unmodified USA release and unpacks the game's data next to the program.
-
-On a machine without a working Vulkan the setup window and the game use OpenGL by themselves. To ask for OpenGL
-from the start (a Vulkan driver that starts but is incomplete, as on Intel Ivy Bridge), set `BT3_GPU_API=gl`:
-`BT3_GPU_API=gl ./Tenkaichi3Decomp-setup`, and the same for `./Tenkaichi3Decomp`. The setup also runs without a
-window: `./Tenkaichi3Decomp-setup --install <disc image>`.
-
-## Building from source
-
-```
-python3 install.py --iso <your disc image>
-```
-
-does everything on Linux: checks the tools, reads the disc, builds the 64-bit program and runs the game's demo
-fight as a test. `python3 install.py --check` lists what is missing. `port/setup/build.sh && ./Tenkaichi3Decomp-setup` is
-the same with a window.
-
-### macOS (experimental)
-
-Apple Silicon Macs, native arm64, built from source on the Mac itself; there is no macOS release archive. The
-attract-demo fight gives the same state as the Linux program on every frame, the rewind test (rollback) passes,
-and the game draws through Metal with sound; online play against Linux / Windows has not been tried on two machines
-yet. With [Homebrew](https://brew.sh):
-
-```
-xcode-select --install                       # (once: Apple's command line tools)
-brew install llvm sdl3 shaderc spirv-cross
-python3 install.py --iso <your disc image>   # then ./play.sh
-```
-
-`python3 install.py --check` lists what is missing. How the build works and what is left:
-[docs/port/macos_plan.md](docs/port/macos_plan.md).
-
-The release archives for Linux and Windows are built from the repository alone, with no disc involved:
-`port/release/build.sh` (needs only docker) or the GitHub workflow in `.github/workflows/release.yml`. The
-repository carries the shape of the game's built-in data tables without their values (`port/data`); the
-finished program fetches the values from your disc when it starts.
-
-## Layout
-
-| Path | Contents |
+| | |
 |---|---|
-| `src/`, `include/` | The game's code, from BT3-Decompiled; changes for PC are inside `#ifdef PORT` |
-| `port/src/` | The PC side: memory, files, memory card, movies; `gs/` renderer, sound, input, settings window |
-| `port/tools/` | The build: pointer rewriting for 64-bit, packaging, extraction |
-| `port/data/` | The game's built-in data tables as shape only (labels, sizes, pointer slots), no values |
-| `port/release/` | The container and scripts that build the release archives |
-| `port/setup/` | The setup window |
-| `port/third_party/` | Dear ImGui (MIT), the maths library of newlib |
-| `docs/` | Notes on the game (from the decompilation) and `docs/port/` on the port |
+| Android | 8.0 (API 26) or newer, 64-bit (arm64-v8a) |
+| Graphics | Vulkan support (almost every 64-bit phone from 2018 on) |
+| Storage | about 3.5 GB free for the game's data, plus the ISO while installing |
+| Game | your own `.iso` of *Dragon Ball Z: Budokai Tenkaichi 3*, USA (SLUS-21678) |
 
-This project was made with the help of AI.
+## Getting started
 
-## Contributors
+1. Download the newest `DragonRage-x.y.z.apk` from [Releases](../../releases) and install it. Android may ask you to
+   allow installing apps from that source.
+2. Open **Dragon Rage** and tap **Allow** to give it "All files access". This lets the app keep its folder at the
+   root of your storage, where you can reach it with a file manager. You can also tap **Not now**.
+3. Tap **Choose ISO...** and pick your disc image. Unpacking takes a few minutes, and you only do it once.
+4. Tap **Play**.
 
-- [RexxColder](https://github.com/RexxColder): the OpenGL 3.3 renderer beside Vulkan (the split of the renderer
-  into a shared recorder and two back ends), and stages and songs from outside the disc (the manifest, the
-  install scripts, the menu changes and their documentation), in
-  [pull request #1](https://github.com/z3xox/Tenkaichi3Decomp/pull/1). Both were brought onto the main line
-  with changes; the documents under `docs/port/` say which.
+In the game, Android's **Back** gesture, a controller's **PS / Home** button or **L3 + R3** open the game's own menu.
+It has the touch layout editor, online play, cheats and more.
 
-## Licence
+### Folders
 
-The port's own code (everything under `port/` except `port/third_party/`, the setup, the build tools, and the
-PC changes inside `#ifdef PORT`) is under the [MIT licence](LICENSE). The libraries in `port/third_party/`
-keep their own licences (Dear ImGui: MIT; newlib's maths library: its BSD-style terms, in that folder).
-The game's code in `src/` and `include/` comes from the decompilation and is not ours to license: it belongs
-to the game's rights holders.
+| Where | What |
+|---|---|
+| `DragonRage/` (root of the storage) | settings, saves, logs, `launcher.txt`, `mods.txt` |
+| `DragonRage/textures/` | texture packs (PCSX2 naming, `.dds` or `.png`) |
+| `DragonRage/mods/<name>/` | mods, one folder each |
+| `DragonRage/stages/`, `DragonRage/songs/` | extra stages and songs ([how](docs/port/adding_stages.md)) |
+| `Android/data/io.github.tenkaichi3decomp/files/gamedata/` | the game's data unpacked from your ISO |
 
-## Legal
+The game's data stays in the app's own folder because Android writes there much faster. If you tap **Not now** at
+the start, everything lives in that folder instead.
 
-This project is not affiliated with or endorsed by the game's developers, publishers or rights holders. It
-exists for preservation, study and interoperability, and distributes none of the game's assets. All rights to
-the game belong to their owners. You need your own legally obtained copy of the game to use it.
+### Mods
+
+A mod is a folder laid out like the game's data, for example `pzs3us1/01234.bin` or `disc/DATA/...`. Put it in
+`DragonRage/mods/`, or use **Mods > Import .zip** (the game's folders may sit anywhere inside the zip). In the list,
+tick the mods you want and use ▲▼ to order them: the first one that has a file wins. For online play, both players
+need the same mods switched on.
+
+### Performance tips
+
+The game runs at 30 frames a second, as on the PS2. **Smooth motion** draws extra pictures in between, which doubles
+the graphics work at 60.
+
+| Chip | Try |
+|---|---|
+| Adreno 730 and newer, Xclipse, Immortalis | 3x, Smooth motion 60 |
+| Mali-G6xx/G7xx (e.g. G720), Adreno 6xx | 2x at 60, or 3x at 30 |
+| Older Mali-G5x/G7x, Adreno 5xx, PowerVR | 1x–2x; Compatibility mode if the picture is wrong |
+
+**Fast depth** (Settings > Performance) lets the chip skip hidden pixels and helps most at 3x and above.
+
+### Problems and logs
+
+- The game writes `DragonRage/bt3_log.txt` on each run. With a PC, `adb logcat -s bt3` shows the same live.
+- A file `DragonRage/bt3_env.txt` with `NAME=value` lines sets test switches. For example, `BT3_GS_VERBOSE=1`
+  logs frame times and `BT3_PROFILE=1` logs where the processor spends its time.
+- When opening an issue, attach `bt3_log.txt` and say which phone and chip you have (shown in **About**).
+
+## Building
+
+The APK is built without Gradle by [`port/android/build_apk.sh`](port/android/build_apk.sh). It builds SDL3 for
+Android, the game, the loader and the Java side, then packs and signs the APK.
+
+### On GitHub (no setup)
+
+[`.github/workflows/android.yml`](.github/workflows/android.yml) builds the APK on every push to `main` (download it
+from the run's **Artifacts**). Pushing a tag `vX.Y.Z` also makes a draft release with the APK attached. Two optional
+repository secrets:
+
+| Secret | What for |
+|---|---|
+| `ANDROID_KEYSTORE_B64` | the signing keystore in base64. Updates install over earlier versions only when both are signed with the same key. |
+| `HXDISCORD_ZIP_URL` | a download link to `hxdiscord_rpc-android-support-master.zip`. Without it the APK has no Discord status. |
+
+### On your machine (Ubuntu 24.04 or WSL)
+
+```sh
+sudo apt install clang-20 llvm-20 lld-20 libclang-20-dev python3-clang-20 glslang-tools cmake ninja-build openjdk-17-jdk
+# an Android SDK with an NDK, build-tools and a platform, in ANDROID_HOME
+export ANDROID_HOME=~/Android/Sdk
+KEYSTORE=path/to/your.keystore HXDISCORD_DIR=path/to/hxdiscord_rpc-android-support-master \
+    bash port/android/build_apk.sh 1.2.3 123        # -> port/build/DragonRage-1.2.3.apk
+```
+
+`KEYSTORE` and `HXDISCORD_DIR` are optional. Version code 123 for 1.2.3 is major×100 + minor×10 + patch.
+
+### How the Android port works
+
+| Piece | Where |
+|---|---|
+| The game, compiled for `aarch64` with 4-byte game pointers and linked at `0x20000000` (`BT3_CC=android64`) | [`port/tools/toolchain.py`](port/tools/toolchain.py) |
+| The loader (`libmain.so`): maps the game image below 4 GB, moves it if that address is taken, runs it on SDL3, starts Discord | [`port/android/native/loader.c`](port/android/native/loader.c) |
+| Launcher, data folder, mods, GPU detection, strings | [`port/android/java/`](port/android/java/io/github/tenkaichi3decomp) |
+| Touch pad, in-game menu, Discord status texts | [`port/src/gs/ui.cpp`](port/src/gs/ui.cpp) |
+| Renderer (Vulkan through SDL3's GPU API) | [`port/src/gs/gs_gpu.c`](port/src/gs/gs_gpu.c), [`gs_draw.c`](port/src/gs/gs_draw.c) |
+| APK packer (binary manifest, no aapt) | [`port/android/make_apk.py`](port/android/make_apk.py) |
+
+The PC port's own documentation is in [docs/README_PC.md](docs/README_PC.md) and [docs/port/README.md](docs/port/README.md).
+
+## Roadmap
+
+- **iOS**: planned. The game image's fixed low address, which the Android loader solves by mapping memory itself,
+  is the main question on iOS. It will most likely be a sideloaded app (AltStore / SideStore).
+- Online: smoother play over Wi-Fi and mobile networks (lag spikes).
+- Graphics: glow and blur effects at a lower resolution, fewer render-pass breaks (3x at 60 on mid-range Mali).
+- ASTC texture packs.
+
+## Credits and license
+
+- **[z3xox/Tenkaichi3Decomp](https://github.com/z3xox/Tenkaichi3Decomp)**: the decompilation and the PC port this is
+  built on. Dragon Rage is based on its MIT-licensed version (see [LICENSE](LICENSE)). The original repository moved to
+  GNU AGPL v3 afterwards.
+- [SDL3](https://libsdl.org) (zlib), [Dear ImGui](https://github.com/ocornut/imgui) (MIT),
+  [hxdiscord_rpc](https://github.com/MAJigsaw77/hxdiscord_rpc) (MIT), Discord Social SDK (Discord's terms).
+- Dragon Ball, Budokai Tenkaichi and all related names belong to their owners. This is a fan project, not affiliated
+  with Bandai Namco, Spike or Toei. No game assets are in this repository.
+
+---
+
+## Português
+
+**Dragon Rage** é um port para Android de *Dragon Ball Z: Budokai Tenkaichi 3*, feito a partir do
+[Tenkaichi3Decomp](https://github.com/z3xox/Tenkaichi3Decomp). É o código do próprio jogo compilado para o celular,
+**não é um emulador**. O suporte a iOS está planejado.
+
+**Você precisa do seu próprio disco** (ISO da versão americana, SLUS-21678). O app não vem com nada do jogo e não
+baixa nada. Compartilhe só o APK, nunca a ISO.
+
+**Como usar:**
+
+1. Baixe o APK em [Releases](../../releases) e instale.
+2. Abra o app e toque em **Permitir** para dar "Acesso a todos os arquivos". Isso cria a pasta `DragonRage` na raiz
+   do armazenamento.
+3. Toque em **Escolher ISO...** e aguarde alguns minutos.
+4. Toque em **Jogar**.
+
+O launcher segue o idioma do celular e tem configurações de gráficos, desempenho, controles, áudio, mods e Discord.
+
+- **Texturas** vão em `DragonRage/textures`.
+- **Mods** vão em `DragonRage/mods/<nome>`, ou entram pelo botão **Importar .zip**.
+- **Para compilar**, veja [Building](#building). O GitHub Actions gera o APK sozinho a cada push.
