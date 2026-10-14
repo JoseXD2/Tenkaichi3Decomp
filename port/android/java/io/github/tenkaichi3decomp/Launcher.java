@@ -70,6 +70,9 @@ public class Launcher extends Activity {
     int mSection = HOME, mTab;
     boolean mDirty;            // something changed since the game was started: a game left open is started again
     String mGpu;
+    Updater.Release mUpdate;   // a newer release found on GitHub (Updater.java)
+    boolean mUpdChecked;       // asked once per opening of the launcher
+    String mUpdState;          // while downloading / installing: what is shown in the card
 
     int dp(float x) { return (int) (x * getResources().getDisplayMetrics().density + 0.5f); }
 
@@ -129,6 +132,7 @@ public class Launcher extends Activity {
         }
         gpu();
         shell();
+        if (mLaunch.on("update_check", true) && !mUpdChecked) { updateCheck(false); }
     }
 
     /* the graphics chip, once (a throwaway OpenGL ES context, Gpu.java); on the first start its profile is applied */
@@ -315,7 +319,7 @@ public class Launcher extends Activity {
         pp.topMargin = dp(8);
         pp.bottomMargin = dp(10);
         mSide.addView(play, pp);
-        nav("⌂  " + Str.t("home"), HOME);
+        nav("⌂  " + Str.t("home") + (mUpdate != null ? "  ⬆" : ""), HOME);
         nav("⚙  " + Str.t("settings"), SETTINGS);
         nav("✚  " + Str.t("mods") + (mMods.on.isEmpty() ? "" : "  (" + mMods.on.size() + ")"), MODS);
         nav("ⓘ  " + Str.t("about"), ABOUT);
@@ -398,6 +402,7 @@ public class Launcher extends Activity {
     // ---- pages
     void pageHome() {
         title(Str.t("ready"), Str.t("ready_sub"));
+        if (mUpdate != null) { updateCard(); }
         separator(GAME);
         info(Str.t("st_data"), "✓  " + Str.t("st_data_ok"), OK);
         info(Str.t("st_gpu"), mGpu == null ? Str.t("st_gpu_wait") : Gpu.label(mGpu), TEXT);
@@ -650,6 +655,7 @@ public class Launcher extends Activity {
             check(Str.t("skip_logos"), null, s.on("skip_logos", false), v -> s.set("skip_logos", v));
             check(Str.t("skip_intro"), null, s.on("skip_intro", false), v -> s.set("skip_intro", v));
             check(Str.t("skip_copy"), null, s.on("skip_copyright", false), v -> s.set("skip_copyright", v));
+            check(Str.t("upd_check"), Str.t("upd_check_tip"), mLaunch.on("update_check", true), v -> mLaunch.set("update_check", v));
             if (hasDiscord()) { // (only in builds made with the Discord status: port/android/build_apk.sh, HXDISCORD_DIR)
                 check(Str.t("discord"), Str.t("discord_tip"), mLaunch.on("discord", true), v -> mLaunch.set("discord", v));
             }
@@ -790,6 +796,11 @@ public class Launcher extends Activity {
     void pageAbout() {
         title("Dragon Rage", Str.t("about_sub"));
         info(Str.t("version"), version(), TEXT);
+        TextView chk = text("⟳  " + Str.t("upd_check_now"), 14, ACCENT);
+        chk.setPadding(0, dp(4), 0, dp(4));
+        chk.setClickable(true);
+        chk.setOnClickListener(v -> { chk.setText(Str.t("upd_checking")); updateCheck(true); });
+        mWin.addView(chk);
         info(Str.t("device"), android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL + " · Android " + android.os.Build.VERSION.RELEASE, TEXT);
         info(Str.t("st_gpu"), mGpu == null ? Str.t("st_gpu_wait") : Gpu.label(mGpu), TEXT);
         info(Str.t("st_folder"), mDir.getPath(), TEXT);
@@ -806,6 +817,119 @@ public class Launcher extends Activity {
         TextView c = text("Tenkaichi3Decomp · github.com/z3xox/Tenkaichi3Decomp\nSDL3 · Dear ImGui · Discord Social SDK", 12, DIM);
         c.setPadding(0, dp(12), 0, 0);
         mWin.addView(c);
+    }
+
+    // ---- updates (Updater.java)
+    long versionCode() {
+        try {
+            android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return android.os.Build.VERSION.SDK_INT >= 28 ? pi.getLongVersionCode() : pi.versionCode;
+        } catch (Exception e) {
+            return Long.MAX_VALUE;
+        }
+    }
+
+    /* asks GitHub in the background; `told`: the player asked (About), so "nothing newer" is said too */
+    void updateCheck(final boolean told) {
+        mUpdChecked = true;
+        final long mine = versionCode();
+        new Thread(() -> {
+            final Updater.Release r = Updater.check(mine);
+            runOnUiThread(() -> {
+                if (r != null && (told || !r.tag.equals(mLaunch.str("update_skip", "")))) {
+                    mUpdate = r;
+                    if (mSide != null) { section(told ? HOME : mSection); }
+                } else if (told && mSide != null) {
+                    section(ABOUT);
+                    TextView t = text(Str.t("upd_none"), 14, OK);
+                    mWin.addView(t, 2);
+                }
+            });
+        }).start();
+    }
+
+    void updateCard() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(16), dp(12), dp(16), dp(12));
+        card.setBackground(outlined(FRAME, ACCENT, dp(1), dp(10)));
+        TextView h = text("⬆  " + Str.f("upd_title", mUpdate.tag), 16, ACCENT);
+        h.setTypeface(Typeface.DEFAULT_BOLD);
+        card.addView(h);
+        String notes = mUpdate.notes.replaceAll("(?m)^#+\\s*", "").replaceAll("[*`>]", "").trim();
+        if (notes.length() > 280) { notes = notes.substring(0, 280).trim() + "…"; }
+        if (notes.length() > 0) {
+            TextView n = text(notes, 12, DIM);
+            n.setPadding(0, dp(4), 0, dp(6));
+            card.addView(n);
+        }
+        if (mUpdState != null) { // downloading or installing
+            TextView st = text(mUpdState, 13, TEXT);
+            card.addView(st);
+            mUpdStatus = st;
+        } else {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setPadding(0, dp(6), 0, 0);
+            TextView go = bigButton(Str.t("upd_now"), true);
+            go.setOnClickListener(v -> updateRun());
+            TextView later = bigButton(Str.t("upd_later"), false);
+            later.setOnClickListener(v -> { mUpdate = null; section(HOME); });
+            TextView skip = bigButton(Str.t("upd_skip"), false);
+            skip.setOnClickListener(v -> { mLaunch.setStr("update_skip", mUpdate.tag); mUpdate = null; section(HOME); });
+            for (TextView b : new TextView[] {go, later, skip}) {
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(38));
+                lp.rightMargin = dp(8);
+                row.addView(b, lp);
+            }
+            card.addView(row);
+        }
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.topMargin = dp(6);
+        lp.bottomMargin = dp(4);
+        mWin.addView(card, lp);
+    }
+
+    TextView mUpdStatus;
+
+    void updateStatus(String s) {
+        mUpdState = s;
+        if (mUpdStatus != null && mUpdStatus.isAttachedToWindow()) { mUpdStatus.setText(s); } else if (mSection == HOME && mSide != null) { section(HOME); }
+    }
+
+    void updateRun() {
+        final Updater.Release r = mUpdate;
+        updateStatus(Str.f("upd_downloading", r.tag, 0));
+        section(HOME);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        new Thread(() -> {
+            try {
+                final int[] last = {-1};
+                File apk = Updater.download(this, r, (done, total) -> {
+                    int pct = total > 0 ? (int) (done * 100 / total) : 0;
+                    if (pct != last[0]) {
+                        last[0] = pct;
+                        runOnUiThread(() -> updateStatus(Str.f("upd_downloading", r.tag, pct)));
+                    }
+                });
+                runOnUiThread(() -> updateStatus(Str.t("upd_installing")));
+                Updater.install(this, apk, failure -> runOnUiThread(() -> {
+                    if (failure != null) { updateFailed(failure); }
+                }));
+            } catch (Exception e) {
+                final String m = e.getMessage() != null ? e.getMessage() : e.toString();
+                runOnUiThread(() -> updateFailed(m));
+            }
+        }).start();
+    }
+
+    void updateFailed(String m) {
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        mUpdState = null;
+        if (mSide != null) { section(HOME); }
+        TextView t = text(Str.f("upd_fail", m), 13, BAD);
+        t.setPadding(0, dp(4), 0, 0);
+        mWin.addView(t, Math.min(3, mWin.getChildCount()));
     }
 
     // ---- start the game

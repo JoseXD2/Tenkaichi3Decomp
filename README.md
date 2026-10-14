@@ -50,6 +50,8 @@ ARM64. It is **not an emulator**, so the processor has little to do and the grap
   `.zip`.
 - **Discord Rich Presence** in the official releases: shows the screen you are on (menus, Story mode saga, shop,
   Mission 100, fights with their timer). It can be switched off. Builds made by others come without it.
+- **Updates**: the launcher finds a new release here on GitHub and installs it after asking you. It can be
+  switched off (Settings > Game).
 - **Online** play from the PC port, with rollback: direct IP, or room codes through the matchmaking service when it
   accepts the build.
 

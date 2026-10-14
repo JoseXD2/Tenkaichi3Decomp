@@ -45,6 +45,8 @@ def manifest_tree(min_sdk, target_sdk, version_code, version_name):
         e("uses-permission", [a("name", T_STRING, "android.permission.ACCESS_WIFI_STATE")]),
         # the data folder at the root of the storage (/sdcard/DragonRage, Launcher.java): "all files access" on
         # Android 11+, the old storage permissions before
+        # the launcher's updates (Updater.java): Android's installer, after the player confirms
+        e("uses-permission", [a("name", T_STRING, "android.permission.REQUEST_INSTALL_PACKAGES")]),
         e("uses-permission", [a("name", T_STRING, "android.permission.MANAGE_EXTERNAL_STORAGE")]),
         e("uses-permission", [a("name", T_STRING, "android.permission.READ_EXTERNAL_STORAGE")]),
         e("uses-permission", [a("name", T_STRING, "android.permission.WRITE_EXTERNAL_STORAGE"), a("maxSdkVersion", T_DEC, 29)]),

@@ -162,6 +162,23 @@ final class Str {
         a("lang", "Language", "Idioma", "Idioma");
         a("lang_auto", "Phone's", "Do celular", "Del teléfono");
 
+        // ---- updates (Updater.java)
+        a("upd_title", "Update available: %s", "Atualização disponível: %s", "Actualización disponible: %s");
+        a("upd_now", "Update", "Atualizar", "Actualizar");
+        a("upd_later", "Later", "Depois", "Después");
+        a("upd_skip", "Skip this version", "Pular esta versão", "Omitir esta versión");
+        a("upd_downloading", "Downloading %s... %d%%", "Baixando %s... %d%%", "Descargando %s... %d%%");
+        a("upd_installing", "Installing: confirm on the screen that opens.", "Instalando: confirme na tela que abrir.",
+                "Instalando: confirma en la pantalla que se abre.");
+        a("upd_fail", "The update failed: %s", "A atualização falhou: %s", "La actualización falló: %s");
+        a("upd_check", "Check for updates", "Procurar atualizações", "Buscar actualizaciones");
+        a("upd_check_tip", "Looks for a new version on GitHub when the launcher opens, and offers to install it.",
+                "Procura uma versão nova no GitHub quando o launcher abre e oferece para instalar.",
+                "Busca una versión nueva en GitHub al abrir el launcher y ofrece instalarla.");
+        a("upd_check_now", "Check for updates now", "Procurar atualizações agora", "Buscar actualizaciones ahora");
+        a("upd_checking", "Checking...", "Procurando...", "Buscando...");
+        a("upd_none", "You have the newest version.", "Você já tem a versão mais nova.", "Ya tienes la versión más nueva.");
+
         // ---- mods
         a("mods_sub", "Each mod is a folder in %s with files laid out as in the game data (pzs3us1/01234.bin, disc/...). "
                 + "Switched-on mods are used from the top: the first that has a file wins.",
