@@ -11,6 +11,7 @@ extern "C" {
 
 typedef struct PortChatLine {
     char text[CHAT_TEXT + 1];
+    char sender[32];
     uint64_t atMs; /* SDL_GetTicks() when it was said or heard */
     int mine;      /* 1 = this player said it */
 } PortChatLine;
@@ -23,6 +24,7 @@ int PortChat_Enabled(void);         /* setting "chat" (on by default) */
 void PortChat_EnabledSet(int on);
 int PortChat_Muted(void);           /* the other player's lines are not kept (until the program ends) */
 void PortChat_MutedSet(int on);
+void PortChat_Reset(void);          /* clears all lines, outbox, and sequence tracking for a new session */
 
 /* The connection (game thread, net.c). */
 int PortChat_Outgoing(uint32_t nowMs, uint32_t *seq, char *text); /* a line due to be sent now: its length, -1 = none */

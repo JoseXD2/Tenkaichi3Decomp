@@ -21,6 +21,8 @@
 
 extern int Port_Setting(const char *name, int def); /* plat_settings.c */
 extern void Port_SettingSave(const char *name, int value), Port_SettingsWrite(void);
+extern const char *Port_NetName(int player);         /* gs/net.c */
+extern int Port_NetMe(void);
 
 enum { LINES = 32, OUTBOX = 4, SENDS = 3, RESEND_MS = 120, SAY_EVERY_MS = 1000, HEAR_EVERY_MS = 500, SEEN = 8 };
 
@@ -84,12 +86,46 @@ static int clean(const char *in, int len, char *out) {
     return end;
 }
 
-static void keep(const char *text, int mine) { /* (under the lock) */
+/* Who says a line: looked up before the lock is taken (net.c's names are not this file's to hold it over). The two
+   players may have the same name: this player's lines then say so ("(you)"), not only by their colour. */
+static const char *sender_of(int mine) {
+    static char both[sizeof(((PortChatLine *)0)->sender)];
+    const char *name = Port_NetName(mine ? Port_NetMe() : !Port_NetMe());
+    const char *other = Port_NetName(mine ? !Port_NetMe() : Port_NetMe());
+
+    if (name == NULL || name[0] == '\0') {
+        return mine ? "You" : "Rival";
+    }
+    if (mine && other != NULL && strcmp(name, other) == 0) {
+        SDL_snprintf(both, sizeof(both), "%s (you)", name);
+        return both;
+    }
+    return name;
+}
+
+static void keep(const char *text, int mine, const char *sender) { /* (under the lock) */
     PortChatLine *l = &sLines[sCount % LINES];
     SDL_strlcpy(l->text, text, sizeof(l->text));
+    SDL_strlcpy(l->sender, sender, sizeof(l->sender));
     l->atMs = SDL_GetTicks();
     l->mine = mine;
     sCount++;
+}
+
+/* A mute stays (until the program ends): a rematch with the same player is a new session. */
+void PortChat_Reset(void) {
+    SDL_LockSpinlock(&sLock);
+    sCount = 0;
+    sSeq = 0;
+    sSeenAt = 0;
+    sSaid = 0;
+    sHeard = 0;
+    sSaidMs = 0;
+    sHeardMs = 0;
+    memset(sLines, 0, sizeof(sLines));
+    memset(sOut, 0, sizeof(sOut));
+    memset(sSeen, 0, sizeof(sSeen));
+    SDL_UnlockSpinlock(&sLock);
 }
 
 int PortChat_Enabled(void) {
@@ -117,6 +153,7 @@ int PortChat_Say(const char *text) {
     char line[CHAT_TEXT + 1];
     uint64_t now = SDL_GetTicks();
     int len, k, slot = 0;
+    const char *name;
 
     if (text == NULL || !PortChat_Enabled()) {
         return 0;
@@ -127,8 +164,9 @@ int PortChat_Say(const char *text) {
     }
     sSaid = 1;
     sSaidMs = now;
+    name = sender_of(1);
     SDL_LockSpinlock(&sLock);
-    keep(line, 1);
+    keep(line, 1, name);
     for (k = 0; k < OUTBOX; k++) { /* a free place, else the oldest line's */
         if (sOut[k].left == 0) {
             slot = k;
@@ -194,10 +232,12 @@ void PortChat_Heard(uint32_t seq, const char *text, int len) {
     char line[CHAT_TEXT + 1];
     uint64_t now = SDL_GetTicks();
     int k;
+    const char *name;
 
     if (seq == 0 || len <= 0 || !PortChat_Enabled() || sMuted) {
         return;
     }
+    name = sender_of(0);
     SDL_LockSpinlock(&sLock);
     for (k = 0; k < SEEN; k++) {
         if (sSeen[k] == seq) { /* a line already heard, sent again */
@@ -209,7 +249,7 @@ void PortChat_Heard(uint32_t seq, const char *text, int len) {
     if ((!sHeard || now - sHeardMs >= HEAR_EVERY_MS) && clean(text, len, line) > 0) {
         sHeard = 1;
         sHeardMs = now;
-        keep(line, 0);
+        keep(line, 0, name);
     }
     SDL_UnlockSpinlock(&sLock);
 }

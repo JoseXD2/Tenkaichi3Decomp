@@ -232,6 +232,7 @@ static SDL_GPUTexture *load_strip(const char *env, const char *rel, uint32_t *w,
 static SDL_GPUTexture *sBarTrim, *sBarFill;
 static int sBars = -1; // 0 black, 1 the border; -1 not read yet
 static int sBarsTried;
+static int sChatSize = -1; // 0 = compact, 1 = normal, 2 = large; -1 = not read yet
 
 static float sBarTrimShape = 34.0f / 720.0f; // the border's width over its height
 
@@ -1923,6 +1924,23 @@ static void misc_tab(void) {
     ImGui::SetItemTooltip("Text with the other player of an online match. Tab opens a line (setting key_chat), Enter sends it,\n"
                           "Esc puts it away; while it is typed the keyboard does not play, a controller does. Off: no lines\n"
                           "are shown or sent. A player without it sees nothing.");
+    if (chat) {
+        if (sChatSize < 0) {
+            sChatSize = Port_Setting("chat_size", 1);
+            if (sChatSize < 0 || sChatSize > 2) sChatSize = 1;
+        }
+        static const char *const kChatSizes[] = {"Compact", "Normal", "Large"};
+        int size = sChatSize;
+        if (ImGui::Combo("Chat size", &size, kChatSizes, 3)) {
+            sChatSize = size;
+            Port_SettingSave("chat_size", sChatSize);
+            Port_SettingsWrite();
+        }
+        ImGui::SetItemTooltip("How wide the online chat is and how many lines it shows (while typing / otherwise).\n"
+                              "Compact: 4 / 2, narrower.\n"
+                              "Normal: 6 / 4.\n"
+                              "Large: 8 / 6, wider, for large screens.");
+    }
 }
 
 static void ui_tab(PortVideo &v) {
@@ -2553,7 +2571,7 @@ static void font_draw(ImDrawList *dl, const FontName *n, float x, float y, float
 // The online chat, in the lower left corner. Put away, it shows the newest lines for a few seconds each in a dark
 // rounded card, fading out, and takes no input. While a line is typed it shows the last ones, input field and
 // allows selecting/copying text with mouse.
-enum { CHAT_SHOWN_MS = 8000, CHAT_FADE_MS = 2000, CHAT_ROWS = 4, CHAT_ROWS_TYPING = 6 };
+enum { CHAT_SHOWN_MS = 8000, CHAT_FADE_MS = 2000 };
 
 static bool chat_recent(void) {
     PortChatLine l;
@@ -2563,20 +2581,52 @@ static bool chat_recent(void) {
 
 static void chat_draw(void) {
     ImGuiIO &io = ImGui::GetIO();
-    float w = io.DisplaySize.x * 0.42f < 320.0f ? 320.0f : io.DisplaySize.x * 0.42f;
-    unsigned n = PortChat_Count(), rows = sChat ? CHAT_ROWS_TYPING : CHAT_ROWS, first = n > rows ? n - rows : 0;
+    if (sChatSize < 0) {
+        sChatSize = Port_Setting("chat_size", 1);
+        if (sChatSize < 0 || sChatSize > 2) sChatSize = 1;
+    }
+    int rowsTyping = 6, rowsPassive = 4; // Normal: as the chat always was
+    float wFactor = 0.42f, minW = 320.0f, maxW = 100000.0f;
+    if (sChatSize == 0) { // Compact
+        rowsTyping = 4;
+        rowsPassive = 2;
+        wFactor = 0.28f;
+        minW = 240.0f;
+        maxW = 380.0f;
+    } else if (sChatSize == 2) { // Large
+        rowsTyping = 8;
+        rowsPassive = 6;
+        wFactor = 0.52f;
+        minW = 400.0f;
+    }
+    float w = io.DisplaySize.x * wFactor;
+    if (w < minW) w = minW;
+    if (w > maxW) w = maxW;
+    unsigned n = PortChat_Count(), rows = sChat ? rowsTyping : rowsPassive, first = n > rows ? n - rows : 0;
     Uint64 now = SDL_GetTicks();
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNav |
                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
     if (!sChat) {
         flags |= ImGuiWindowFlags_NoInputs;
     }
+
+    // In the lower left corner (growing upwards) until it is dragged; then where it was left (off the screen: back).
+    static ImVec2 sChatPos;
+    static bool sChatMoved;
+    if (sChatMoved && (sChatPos.x < 0.0f || sChatPos.y < 0.0f || sChatPos.x > io.DisplaySize.x - 50.0f ||
+                       sChatPos.y > io.DisplaySize.y - 50.0f)) {
+        sChatMoved = false;
+    }
 #ifdef __ANDROID__
-    if (sChat) { // (the phone's keyboard covers the lower half: the line is typed at the top)
+    if (sChat && !sChatMoved) { // (the phone's keyboard covers the lower half: the line is typed at the top)
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.02f, io.DisplaySize.y * 0.03f), ImGuiCond_Always, ImVec2(0.0f, 0.0f));
     } else
 #endif
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.02f, io.DisplaySize.y * 0.86f), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+    if (!sChatMoved) {
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.02f, io.DisplaySize.y * 0.86f), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+    } else if (!sChat) {
+        ImGui::SetNextWindowPos(sChatPos, ImGuiCond_Always);
+    }
 
     float bgAlpha = 0.85f;
     if (!sChat) {
@@ -2596,33 +2646,41 @@ static void chat_draw(void) {
     ImGui::SetNextWindowBgAlpha(bgAlpha);
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, sChat ? 1.0f : 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 0.75f, 0.2f, 0.5f));
 
     if (sChat && sChatFocus) {
         ImGui::SetNextWindowFocus();
     }
     if (ImGui::Begin("##chat", NULL, flags)) {
+        if (sChat && ImGui::IsWindowHovered() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+            sChatMoved = true;
+        }
+        if (sChat && sChatMoved) {
+            sChatPos = ImGui::GetWindowPos();
+        }
         const char *names[2] = {Port_NetName(Port_NetMe()), Port_NetName(!Port_NetMe())};
         if (sChat) {
 #ifdef __ANDROID__
-            ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.28f, 1.0f), "Online Chat");
+            ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.28f, 1.0f), "Chat");
 #else
-            ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.28f, 1.0f), "Online Chat (Tab)");
+            ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.28f, 1.0f), "Chat (Tab)");
 #endif
-            ImGui::SameLine(w - 130.0f);
+            ImGui::SameLine();
+            ImGui::TextDisabled("::");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Drag anywhere to move the chat window. Click a line to copy it.");
+            }
+            ImGui::SameLine(w - 70.0f);
             bool mute = PortChat_Muted() != 0;
-            if (ImGui::Checkbox("Mute rival", &mute)) {
+            if (ImGui::Checkbox("Mute", &mute)) {
                 PortChat_MutedSet(mute);
                 sChatFocus = true;
             }
             ImGui::Separator();
-            ImGui::Spacing();
         }
-
-        static unsigned sCopiedIdx;
-        static Uint64 sCopiedTime;
 
         for (unsigned i = first; i < n; i++) {
             PortChatLine l;
@@ -2639,48 +2697,37 @@ static void chat_draw(void) {
                     alpha = (float)(CHAT_SHOWN_MS - age) / (float)CHAT_FADE_MS;
                 }
             }
-            const char *sender = names[l.mine ? 0 : 1][0] != '\0' ? names[l.mine ? 0 : 1] : (l.mine ? "You" : "Rival");
+            const char *sender = l.sender[0] != '\0' ? l.sender : (names[l.mine ? 0 : 1][0] != '\0' ? names[l.mine ? 0 : 1] : (l.mine ? "You" : "Rival"));
             ImGui::PushID((int)i);
             ImVec4 nameCol = l.mine ? ImVec4(0.35f, 0.85f, 1.0f, alpha) : ImVec4(1.0f, 0.82f, 0.28f, alpha);
             ImGui::TextColored(nameCol, "%s:", sender);
-            ImGui::SameLine(0.0f, 6.0f);
+            ImGui::SameLine(0.0f, 4.0f);
 
-            if (sChat) {
-                bool justCopied = (sCopiedIdx == i && now - sCopiedTime < 2000);
-                float btnW = 50.0f;
-                float availW = w - (ImGui::GetCursorPosX() - ImGui::GetWindowPos().x) - btnW - 8.0f;
-                if (availW < 120.0f) availW = 120.0f;
-                ImGui::SetNextItemWidth(availW);
-
-                char msgBuf[CHAT_TEXT + 1];
-                SDL_strlcpy(msgBuf, l.text, sizeof(msgBuf));
-                ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.12f, 0.12f, 0.16f, 0.5f));
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 2.0f));
-                ImGui::InputText("##t", msgBuf, sizeof(msgBuf), ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_AutoSelectAll);
-                ImGui::PopStyleVar();
-                ImGui::PopStyleColor();
-
-                ImGui::SameLine();
-                if (ImGui::SmallButton(justCopied ? "Copied!" : "Copy")) {
-                    SDL_SetClipboardText(l.text);
-                    sCopiedIdx = i;
-                    sCopiedTime = now;
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Copy message to clipboard");
-                }
-            } else {
-                ImVec2 at = ImGui::GetCursorScreenPos();
+            ImVec2 at = ImGui::GetCursorScreenPos();
+            if (!sChat) {
                 ImGui::GetWindowDrawList()->AddText(NULL, 0.0f, ImVec2(at.x + 1.0f, at.y + 1.0f), IM_COL32(0, 0, 0, (int)(230.0f * alpha)), l.text, NULL, w - (at.x - ImGui::GetWindowPos().x));
-                ImGui::PushTextWrapPos(w);
-                ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, alpha), "%s", l.text);
-                ImGui::PopTextWrapPos();
+            }
+            ImGui::PushTextWrapPos(w);
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, alpha), "%s", l.text);
+            ImGui::PopTextWrapPos();
+            if (sChat) { // a click copies the line (a room code or an address is passed on this way); a drag does not
+                static unsigned sCopiedIdx;
+                static Uint64 sCopiedMs;
+                bool copied = sCopiedIdx == i + 1 && now - sCopiedMs < 1500;
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(copied ? "Copied" : "Click to copy");
+                    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 16.0f) {
+                        SDL_SetClipboardText(l.text);
+                        sCopiedIdx = i + 1;
+                        sCopiedMs = now;
+                        sChatFocus = true;
+                    }
+                }
             }
             ImGui::PopID();
         }
 
         if (sChat) {
-            ImGui::Spacing();
             if (sChatFocus) {
                 ImGui::SetKeyboardFocusHere();
                 sChatFocus = false;
@@ -2702,15 +2749,15 @@ static void chat_draw(void) {
                 }
             }
 #ifdef __ANDROID__
-            ImGui::TextDisabled(sChatSoon ? "One line a second: Enter again to send" : "Enter: send   Back: close");
+            ImGui::TextDisabled(sChatSoon ? "1 line/s: Enter to send" : "Enter: send   Back: close");
 #else
-            ImGui::TextDisabled(sChatSoon ? "One line a second: Enter again to send" : "Enter: send   Esc / Tab: close   Ctrl+V: paste");
+            ImGui::TextDisabled(sChatSoon ? "1 line/s: Enter to send" : "Enter: send   Esc/Tab: close   Ctrl+V: paste");
 #endif
         }
     }
     ImGui::End();
     ImGui::PopStyleColor();
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleVar(4);
 }
 
 // Builds this frame's picture of the overlay (the settings or the online window, the line over the picture).

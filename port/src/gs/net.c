@@ -707,6 +707,7 @@ static void net_start(int role, const char *host, const char *join) {
     sTick = 0;
     memset(sIn, 0, sizeof(sIn));
     memset(sHave, 0, sizeof(sHave)); /* (a second session in one run starts as clean as the first) */
+    PortChat_Reset();
     sWaitNs = sWaits = 0;
     sFromLobby = sHandSock >= 0;
     if (sFromLobby) {
@@ -1411,6 +1412,7 @@ void Port_NetSessionEnd(void) {
     }
     sMode = 0;
     sSession = 0;
+    PortChat_Reset();
     put_env("BT3_SAVES", sSavesWasSet ? sSavesBefore : NULL);
 }
 
@@ -1428,6 +1430,7 @@ void Port_NetArrived(void) {
    normally is. */
 void Port_NetLeave(void) {
     fprintf(stderr, "bt3: net: the session has ended\n");
+    PortChat_Reset();
     if (sSock >= 0 && sConnected) { /* tell the other side, so that it does not wait for input that will not come */
         uint32_t bye[3] = {MAGIC, T_BYE, sByeWhy};
         int k;
