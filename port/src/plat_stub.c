@@ -127,6 +127,31 @@ void Port_GameSpeedSet(int percent) {
 int Port_SpeedMilli(void) {
     return Port_NetSession() || Port_NetActive() ? Port_NetSpeedMilli() : Port_GameSpeed() * 10;
 }
+/* BT3_LAG_LOG=1: when things happen in a tick, in microseconds since the start: V a vertical blank (after its wait),
+   R a pad read, E the window's events taken (which is when a controller's state is renewed), S a picture handed to
+   the window. For measuring how old the input is that the game reads, and how long until its picture is shown. */
+void Port_LagMark(int what) {
+    PORT_HOST static int on = -1;
+    PORT_HOST static unsigned long long first = 0;
+    unsigned long long t;
+    if (on < 0) {
+        on = getenv("BT3_LAG_LOG") != NULL;
+    }
+    if (!on) {
+        return;
+    }
+    t = now_ns();
+    if (first == 0) {
+        first = t;
+    }
+    {
+        extern unsigned gGsFrame; /* gs/gs_draw.c: the pictures so far */
+        fprintf(stderr, "lag %c %u %u\n", what, (unsigned)((t - first) / 1000ull), gGsFrame);
+    }
+}
+
+int Port_LateInput(void);
+
 /* A vertical blank's length: 16.68 ms at the game's own pace. */
 #define BLANK_NS (16683350ull * 1000ull / (unsigned long long)Port_SpeedMilli())
 unsigned long long Port_BlankNs(void) { return BLANK_NS; }
@@ -202,7 +227,48 @@ static void vblank_wait(void) {
 
 #undef next
 static unsigned char sPadLast[2][18]; /* (defined with the pads below) */
+
+/* ---- "Low input lag" (setting late_input, F1 > Video; BT3_LATE_INPUT=0/1) ------------------------------------
+ * The game reads the pads, computes the tick, and THEN waits for its vertical blanks (two in a fight) before the
+ * picture is shown: what is seen is 33 ms old in a fight although computing and drawing it took a few (measured
+ * with BT3_LAG_LOG: 1 ms and 2 ms on a fast machine). With this on, a blank the game asks for is not waited for
+ * there but owed, and waited for when the game next reads the pads: the tick's length is the same, the pads are
+ * read at its end instead of its start, and the picture follows the read by the time the work takes.
+ * Nothing of the game's state changes: the same reads, the same blanks, in the same order (a recording replays
+ * the same). Not in an online session and not with in-between pictures, which keep the original order.
+ * (PORT_HOST: real time, not the game's state.) */
+PORT_HOST static int sLateOwed = 0, sLateOn = -1;
+
+int Port_LateInput(void) {
+    if (sLateOn < 0) {
+        sLateOn = getenv("BT3_LATE_INPUT") != NULL ? atoi(getenv("BT3_LATE_INPUT")) != 0 : Port_Setting("late_input", 0) != 0;
+    }
+    return sLateOn;
+}
+
+void Port_LateInputSet(int on) {
+    extern void Port_SettingSave(const char *name, int value);
+    sLateOn = on != 0;
+    Port_SettingSave("late_input", sLateOn);
+}
+
+/* The blanks owed are waited for now: called before the first pad is read. */
+static void late_wait(void) {
+    extern void PortInput_Fresh(void); /* gs/gs_input.c */
+    if (sLateOwed == 0) {
+        return;
+    }
+    while (sLateOwed > 0) {
+        sLateOwed--;
+        vblank_wait();
+    }
+    Port_LagMark('L');
+    if (GsGpu_Enabled()) {
+        PortInput_Fresh(); /* the controllers and keys as they are now, not as they were when the last picture was shown */
+    }
+}
 void Port_VBlank(void) {
+    Port_LagMark('W'); /* (the game has come to wait for a blank) */
     {
         extern void Port_SessionPoll(void); /* gs/state.c: the state at the first blank is kept; an online session
                                                begins or ends here */
@@ -226,13 +292,23 @@ void Port_VBlank(void) {
             /* gs/gs_draw.c: the pictures of the tick that follow its first (in-between pictures and the real one):
                those due before this blank now, those due at it after the wait */
             extern void GsGpu_InterpPump(int ahead_ms, int all);
+            extern int gsInterp; /* gs/gs_draw.c: in-between pictures (their timing counts from the blanks) */
+            int timed = (GsGpu_Enabled() || getenv("BT3_PACED") != NULL) && getenv("BT3_UNCAPPED") == NULL && !warp && !again;
             /* (not while blanks are run again after a rollback or run ahead for an online session: those are
                not shown and not timed, and waiting for a picture here would slow the catching up) */
+            if (timed && Port_LateInput() && !Port_NetSession() && gsInterp <= 0 && sLateOwed < 2) {
+                /* "Low input lag": the wait is owed and made before the next pad read instead (scePad2Read), so
+                   that the tick is computed and shown right after its input was read, not a tick's wait later.
+                   At most two blanks are owed (a fight's tick has two); where the game reads no pad (loading)
+                   the blanks are waited for here as always. */
+                sLateOwed++;
+            } else {
             if (GsGpu_Enabled() && !warp && !again) {
                 GsGpu_InterpPump(-1, 0); /* (-1: what can be finished before the blank) */
             }
-            if ((GsGpu_Enabled() || getenv("BT3_PACED") != NULL) && getenv("BT3_UNCAPPED") == NULL && !warp && !again) {
+            if (timed) {
                 vblank_wait();
+            }
             }
             if (GsGpu_Enabled() && !warp && !again) {
                 GsGpu_InterpPump(6, 0);
@@ -256,6 +332,7 @@ void Port_VBlank(void) {
             fflush(table);
         }
     }
+    Port_LagMark('V');
     gPortVBlanks++;
     {
         extern int gPortResim;
@@ -320,6 +397,10 @@ int scePad2Read(int socket, unsigned char *data) {
     extern void Port_NetInput(int player, unsigned char *data);
     int n;
 
+    if (socket == 0) {
+        late_wait();
+        Port_LagMark('R');
+    }
     if (Port_NetActive()) {
         Port_NetInput(socket, data); /* both pads come from the exchange with the other player */
         n = 18;

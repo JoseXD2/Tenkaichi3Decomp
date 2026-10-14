@@ -6,9 +6,8 @@
 extern "C" {
 #endif
 
-/* The first line of a labels.tsv of the format this program writes and reads best. A list without it was made by an
-   older version and is made again. */
-#define MENU_LABELS_VERSION "BT3 menu text v6:"
+/* Header of the current labels.tsv layout. A list without this version is made again. */
+#define MENU_LABELS_VERSION "BT3 menu text v7:"
 
 enum { MENU_LABELS_MADE = 0, MENU_LABELS_OTHER_DISC = 1, MENU_LABELS_FAILED = -1 };
 

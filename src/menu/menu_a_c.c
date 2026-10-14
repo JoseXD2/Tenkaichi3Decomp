@@ -13,6 +13,11 @@ Title *gTitle = NULL;
 
 #define TITLE_VOICE_BASE 0x86F9
 
+#ifdef PORT
+extern int gPortOverlayOpen; /* port/src/gs/gs_input.c: settings or quit dialog owns input */
+extern int Ui_QuitAsk(void);
+#endif
+
 /* What ends the screen: the movie plays out for 15 frames, then the fade starts. */
 #define TITLE_LEAVE() \
     gTitle->flags |= TITLE_CHOSEN; \
@@ -203,8 +208,13 @@ void Title_OnCardCancel(void) {
     Title_ClipGoto(0, 2, "fl_on_start");
 }
 
-/* Pad 0: start skips the intro and opens the menu; up / down, confirm. */
+/* Pad 0: start skips the intro and opens the menu; up / down, confirm, or quit from the menu on PC. */
 void Title_Input(s32 *result) {
+#ifdef PORT
+    if (gPortOverlayOpen) {
+        return;
+    }
+#endif
     if (gTitle->state == 0) {
         if (gPad[0].gamePressed & 0x1000) {
             Flash_GotoLabel(&gTitle->flash[0], "fl_skip", 1);
@@ -241,6 +251,13 @@ void Title_Input(s32 *result) {
         }
         break;
     case 2:
+#ifdef PORT
+        if (gPad[0].gamePressed & PADG_TRIANGLE) {
+            gTitle->idle = 0;
+            Ui_QuitAsk();
+            break;
+        }
+#endif
         if (gPad[0].gameRepeat & 8) {
             gTitle->idle = 0;
             if (gTitle->itemCount >= 2) {

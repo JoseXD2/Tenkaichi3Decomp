@@ -9,6 +9,13 @@ renderer, sound and input layer underneath; it is not an emulator.
 This repository contains **no game data**. You need your own disc image of that release: the setup reads the
 game's data from it, and it stays on your computer.
 
+> **Official source.** This project lives only at
+> [github.com/z3xox/Tenkaichi3Decomp](https://github.com/z3xox/Tenkaichi3Decomp), and it never ships the game:
+> you need your own disc. We do not make, run or endorse any website that lets you play Budokai Tenkaichi 3 in a
+> browser, with or without ads; such sites are not affiliated with this project. A site that runs the game
+> without your own disc is handing out the game's copyrighted code and data. Our releases are free and have no
+> ads, accounts or payments.
+
 ## What works
 
 - The whole game loop: boot, opening movie, menus, saving, fights, split screen.
@@ -48,6 +55,10 @@ game's data from it, and it stays on your computer.
   The host also chooses the battle (single, team, or DP battle with a limit of 10, 15 or 20) and the time limit.
   Each player sees their own gauges on the left with the players' names under them, and hears the voice language
   chosen in their own save.
+  The two players can write to each other: Tab opens a line, Enter sends it, Esc or Tab puts it away (the keyboard
+  does not play while a line is typed; a controller does; the key can be changed under Controls). Lines show in the
+  lower left corner for a few seconds. F1, Misc turns the chat off; the line also has "Mute rival". It is not
+  part of the game's state and a copy without it simply sees nothing.
 
 Online play is new. It has been played over the internet between a Linux and a Windows machine. The input delay
 is chosen from the connection when a match starts (or set by the host), both players need the same release (the
@@ -140,8 +151,13 @@ This project was made with the help of AI.
 ## Licence
 
 The port's own code (everything under `port/` except `port/third_party/`, the setup, the build tools, and the
-PC changes inside `#ifdef PORT`) is under the [MIT licence](../LICENSE). The libraries in `port/third_party/`
-keep their own licences (Dear ImGui: MIT; newlib's maths library: its BSD-style terms, in that folder).
+PC changes inside `#ifdef PORT`) is under the [GNU Affero General Public License, version 3](../LICENSE)
+(AGPL-3.0-only) in every commit after `06e4671` (2026-10-14). Up to and including that commit it was under the
+[MIT licence](../LICENSE-MIT), and that code, as it was then, stays available under MIT; contributions made under
+MIT keep their MIT notice inside the AGPL whole. Whoever passes the program on, changed or not, or runs a
+changed version for others over a network (a lobby or relay server, a web page), has to offer its source under
+the same licence. The libraries in `port/third_party/` keep their own licences (Dear ImGui: MIT; newlib's maths
+library: its BSD-style terms, in that folder).
 The game's code in `src/` and `include/` comes from the decompilation and is not ours to license: it belongs
 to the game's rights holders.
 

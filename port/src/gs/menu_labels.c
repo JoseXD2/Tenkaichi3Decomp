@@ -9,7 +9,7 @@
  * texture, and each row's letter height, baseline, margin and width are taken from its pixels; for the long name
  * strips (stages, songs, the main menu) the port's own letter cutter (namefont.c) tells capitals from lower case.
  *
- * The texture numbers are those of the USA release (SLUS-21678), so the ten archives are checked by size and
+ * The texture numbers are those of the USA release (SLUS-21678), so the eleven archives are checked by size and
  * CRC-32 first; with any other disc nothing is made. The archives are the player's files: every read of them, of
  * what is unpacked from them and of the textures in them is checked against the buffer's size, whatever the
  * check of the disc said (port/tests/menu_font/labels.c runs this on damaged archives with the sanitizers).
@@ -44,7 +44,7 @@
 #define NameFont_StageName MenuLabels_StageName_
 #include "namefont.c"
 
-#define ML_FILES 10
+#define ML_FILES 11
 #define ML_UNPACKED_MAX (64u * 1024 * 1024)
 #define ML_GS_BYTES (512 * 512 * 4) /* the part of the GS's memory a menu texture is uploaded to and read from */
 #define ML_GROUPS 128
@@ -57,7 +57,7 @@
 static const struct { int number; uint32_t size, crc; } kMlFiles[ML_FILES] = {
     {448, 3693312, 0xFF3A84B3}, {449, 1544768, 0xB0DA7301}, {450, 2884544, 0x5E5A6AD3}, {451, 8374016, 0xBAC607A9},
     {452, 3466880, 0x0EC0646D}, {453, 1776896, 0x717BA147}, {459, 3329600, 0xE34CA2A0}, {460, 2398528, 0x13642238},
-    {461, 3604416, 0xD60327A4}, {463, 875072, 0xB576B4B2}};
+    {461, 3604416, 0xD60327A4}, {463, 875072, 0xB576B4B2}, {472, 740992, 0x26936C01}};
 
 /* The colours of a label. They are chosen by what a label is (ml_color_style), never read from the texture. */
 typedef struct MlColors {
@@ -69,13 +69,17 @@ typedef struct MlColors {
     int outerWidth;
     int shadow;
 } MlColors;
-static const MlColors kMlColors[4] = {
+static const MlColors kMlColors[5] = {
     {"title-prompt", {239, 239, 223}, {177, 179, 96}, {63, 21, 17}, 2, 1, {217, 194, 193}, 2, 0},
     {"main-menu", {203, 203, 203}, {203, 203, 203}, {94, 35, 109}, -1, 0, {0, 0, 0}, 0, 1},
+    {"main-heading", {255, 190, 47}, {255, 34, 34}, {124, 48, 37}, 3, 1, {255, 238, 216}, 2, 0},
     {"purple", {255, 255, 255}, {255, 255, 255}, {70, 0, 89}, -1, 0, {0, 0, 0}, 0, 1},
     {"orange", {244, 239, 137}, {210, 104, 75}, {44, 21, 27}, -1, 0, {0, 0, 0}, 0, 1},
 };
-enum { ML_TITLE_PROMPT, ML_MAIN_MENU, ML_PURPLE, ML_ORANGE };
+enum { ML_TITLE_PROMPT, ML_MAIN_MENU, ML_MAIN_HEADING, ML_PURPLE, ML_ORANGE };
+static const uint8_t kHeadingOutlineBottom[3] = {100, 24, 12};
+static const uint8_t kHeadingBevelLight[3] = {168, 108, 91};
+static const uint8_t kHeadingBevelDark[3] = {24, 6, 3};
 
 typedef struct MlBuf {
     const uint8_t *p;
@@ -104,7 +108,7 @@ typedef struct MlGroup { /* the labels of one texture (or, for the name strips, 
     int nTex;
     int hasOutline, hasFont, hasArt;
     uint8_t outline[3];
-    int fontCap, fontBaseline, fontArt;
+    int fontCap, fontBaseline, fontArt, fontMargin;
     MlRect rect[10];
     int nRects;
 } MlGroup;
@@ -570,6 +574,41 @@ static void ml_cells(MlGroup *g, int count, int perRow, int w, int first) {
    backgrounds, so each is named by its number. Most menus have two sheets, the labels as they are and as they are
    while chosen: the second takes its texts from the first (`textFrom`), so that an edited label changes in both. */
 static int ml_catalog(MlCtx *c) {
+    /* Shared face heights for headings with the same measured letter size. Baselines remain per texture. */
+    enum { ML_HEADING_CAP_REPLAY = 20, ML_HEADING_CAP_COMPACT = 21,
+           ML_HEADING_CAP_STANDARD = 22, ML_HEADING_CAP_LARGE = 24 };
+    typedef struct MlHeading {
+        const char *id, *text;
+        int file, outer, part, index, width, cap, baseline, margin, art, centered;
+    } MlHeading;
+    /* The measured face inside each cream border: archive, member, texture file, texture, width, cap, baseline,
+       left margin, face width. Password and Replay are centered on their 512-pixel sheets. */
+    static const MlHeading kHeadings[] = {
+        {"history-heading", "Dragon History", 460, 1, 11, 1, 512, ML_HEADING_CAP_STANDARD, 28, 9, 319, 0},
+        {"ultimate-heading", "Ultimate Battle", 451, 1, 4, 1, 512, ML_HEADING_CAP_STANDARD, 29, 9, 318, 0},
+        {"sim-heading", "Sim Dragon", 451, 3, 8, 1, 512, ML_HEADING_CAP_STANDARD, 28, 8, 244, 0},
+        {"mission-heading", "Mission 100", 451, 2, 8, 1, 512, ML_HEADING_CAP_STANDARD, 29, 9, 249, 0},
+        {"survival-heading", "Survival", 451, 2, 9, 1, 512, ML_HEADING_CAP_STANDARD, 29, 8, 169, 0},
+        {"fusion-heading", "Disc Fusion", 451, 6, 4, 1, 512, ML_HEADING_CAP_STANDARD, 29, 9, 237, 0},
+        {"tour-heading", "Dragon World Tour", 450, 1, 22, 1, 512, ML_HEADING_CAP_STANDARD, 28, 9, 322, 0},
+        {"evolution-heading", "Evolution Z", 452, 1, 3, 1, 512, ML_HEADING_CAP_COMPACT, 29, 9, 203, 0},
+        {"shop-heading", "Item Shop", 452, 2, 20, 1, 512, ML_HEADING_CAP_LARGE, 30, 8, 190, 0},
+        {"map-heading", "Map Select", 448, 2, 55, 1, 512, ML_HEADING_CAP_COMPACT, 29, 9, 230, 0},
+        {"bgm-select-heading", "BGM Select", 448, 2, 55, 2, 512, ML_HEADING_CAP_STANDARD, 29, 9, 236, 0},
+        {"training-heading", "Ultimate Training", 461, 1, 5, 1, 512, ML_HEADING_CAP_STANDARD, 28, 9, 366, 0},
+        {"heading-battle-training", "Battle Training", 461, 1, 5, 3, 512, ML_HEADING_CAP_STANDARD, 28, 9, 310, 0},
+        {"data-heading", "Data Center", 459, 1, 9, 1, 512, ML_HEADING_CAP_COMPACT, 29, 9, 250, 0},
+        {"password-heading", "Password Input Screen", 459, 3, 2, 6, 512, ML_HEADING_CAP_COMPACT, 32, 8, 332, 1},
+        {"fighter-heading", "Fighter Catalog", 459, 2, 4, 4, 256, ML_HEADING_CAP_COMPACT, 29, 11, 192, 0},
+        {"replay-heading", "Replay Data", 459, 4, 4, 6, 512, ML_HEADING_CAP_REPLAY, 42, 8, 200, 1},
+        {"reference-heading", "Character Reference", 463, 1, 4, 1, 512, ML_HEADING_CAP_LARGE, 29, 8, 345, 0},
+        {"options-heading", "Options", 453, 1, 18, 1, 512, ML_HEADING_CAP_COMPACT, 29, 8, 161, 0},
+        {"screen-heading", "Screen", 453, 1, 18, 2, 512, ML_HEADING_CAP_COMPACT, 29, 8, 141, 0},
+        {"sound-heading", "Sound", 453, 1, 18, 3, 512, ML_HEADING_CAP_STANDARD, 29, 8, 128, 0},
+        {"bgm-heading", "BGM Test", 453, 1, 18, 4, 512, ML_HEADING_CAP_COMPACT, 29, 9, 195, 0},
+        {"controller-heading", "Controller", 453, 1, 18, 5, 512, ML_HEADING_CAP_STANDARD, 29, 8, 210, 0},
+        {"shenron-heading", "Shenron", 472, 2, 5, 1, 512, ML_HEADING_CAP_STANDARD, 29, 8, 173, 0},
+    };
     static const char *const kState[2] = {"normal", "selected"};
     static const char kMain[] = "Dragon History|Ultimate Battle|Dragon World Tour|Duel|Dragon Net Battle|Evolution Z|"
                                 "Ultimate Training|Data Center|Character Reference|Options|Shenron";
@@ -612,6 +651,31 @@ static int ml_catalog(MlCtx *c) {
     if (g == NULL) {
         return 0;
     }
+
+    ML_ADD("main-heading", 449, 2, 23, 1, "Main Menu", 0, NULL, 512, -1);
+    g->height = 64; g->hasFont = g->hasArt = g->hasOutline = 1;
+    g->fontCap = 25; g->fontBaseline = 30; g->fontArt = 194; g->fontMargin = 9;
+    g->outline[0] = 87; g->outline[1] = 22; g->outline[2] = 12;
+    ML_ADD("versus-heading", 448, 1, 24, 1, "Versus Menu", 0, NULL, 512, -1);
+    g->height = 64; g->hasFont = g->hasArt = g->hasOutline = 1;
+    g->fontCap = 21; g->fontBaseline = 29; g->fontArt = 270; g->fontMargin = 7;
+    g->outline[0] = 30; g->outline[1] = 8; g->outline[2] = 4;
+    for (i = 0; i < (int)(sizeof(kHeadings) / sizeof(kHeadings[0])); i++) {
+        const uint8_t outline[3] = {87, 22, 12};
+        const MlHeading *heading = &kHeadings[i];
+        ML_ADD(heading->id, heading->file, heading->outer, heading->part, heading->index,
+               heading->text, heading->centered, NULL, heading->width, -1);
+        g->height = 64;
+        g->hasFont = g->hasArt = 1;
+        g->fontCap = heading->cap; g->fontBaseline = heading->baseline;
+        g->fontArt = heading->art; g->fontMargin = heading->margin;
+        g->hasOutline = 1;
+        memcpy(g->outline, outline, sizeof(outline));
+    }
+    ML_ADD("battle-class-heading", 461, 1, 8, 0, "Basic|Intermediate|Advanced", 0, NULL, 256, -1);
+    g->height = 64;
+    g->hasOutline = 1;
+    g->outline[0] = 87; g->outline[1] = 22; g->outline[2] = 12;
 
     ML_ADD("title-normal", 449, 1, 8, 0, "New Game|Continue", 1, NULL, 512, -1);
     ML_ADD("title-selected", 449, 1, 8, 1, "New Game|Continue", 1, "title-normal", 512, -1);
@@ -721,6 +785,11 @@ static int ml_color_style(const char *group) {
     size_t n = strlen(group), i;
     if (strcmp(group, "main-5") == 0) {
         return ML_MAIN_MENU;
+    }
+    if (strcmp(group, "main-heading") == 0 || strcmp(group, "versus-heading") == 0 ||
+        strcmp(group, "heading-battle-training") == 0 ||
+        (n >= 8 && strcmp(group + n - 8, "-heading") == 0)) {
+        return ML_MAIN_HEADING;
     }
     if (strcmp(group, "title-press-start") == 0) {
         return ML_TITLE_PROMPT;
@@ -1016,6 +1085,7 @@ static int ml_rows(MlCtx *c) {
                 if (g->hasFont) {
                     r->cap = g->fontCap;
                     r->baseline = g->fontBaseline;
+                    if (g->fontMargin) { r->margin = g->fontMargin; }
                 }
                 if (g->hasArt) {
                     r->art = g->fontArt;
@@ -1089,8 +1159,29 @@ static int ml_rows(MlCtx *c) {
     ml_even(c, NULL, "sound-digits-normal/");
     ml_even(c, NULL, "sound-digits-selected/");
     for (i = 0; i < c->nRows; i++) {
-        c->rows[i].colors = ml_color_style(ml_family(&c->rows[i], family, sizeof(family)));
-        c->rows[i].italic = ml_starts(c->rows[i].id, "title-press-start/");
+        MlRow *r = &c->rows[i];
+        if (ml_starts(r->id, "battle-class-heading/0/")) {
+            /* Match each finished cream rim to the source title; the long middle row uses its own crop. */
+            static const struct { int cap, baseline, margin, art, x, width; } kClassTitle[3] = {
+                {20, 42, 23, 87, 0, 256}, {20, 42, 6, 232, 16, 240}, {20, 42, 21, 164, 0, 256}};
+            int index = r->y / 64;
+            if (index < 3) {
+                r->cap = kClassTitle[index].cap;
+                r->baseline = kClassTitle[index].baseline;
+                r->margin = kClassTitle[index].margin;
+                r->art = kClassTitle[index].art;
+                r->x = kClassTitle[index].x;
+                r->w = kClassTitle[index].width;
+            }
+        }
+        if (strcmp(r->id, "password-heading/0/0") == 0) {
+            r->x = 3; r->w = 509;
+        }
+        if (strcmp(r->id, "replay-heading/0/0") == 0) {
+            r->x = 9; r->w = 503;
+        }
+        r->colors = ml_color_style(ml_family(r, family, sizeof(family)));
+        r->italic = ml_starts(r->id, "title-press-start/");
     }
     return 1;
 }
@@ -1155,11 +1246,11 @@ static int ml_row_ok(const MlRow *r) {
 /* labels.tsv and name-styles.tsv: what menu_text.c reads. */
 static int ml_tsv(MlCtx *c, MlText *labels, MlText *styles, int *count) {
     static const char *const kLike[3] = {"song/0/0", "song-highlighted/0/0", "stage/0/0"};
-    char top[8], bottom[8], outline[8], outer[8];
+    char top[8], bottom[8], outline[8], outer[8], outlineBottom[8], bevelLight[8], bevelDark[8];
     int i;
 
     ml_put(labels, "# " MENU_LABELS_VERSION " hash width height y row_height cap_height baseline center margin width_milli x row_width art_width top bottom "
-                   "outline italic outline_milli outer_milli outer_rgb shadow text\n");
+                   "outline italic outline_milli outer_milli outer_rgb shadow outline_bottom bevel_milli bevel_light bevel_dark text\n");
     /* the names of added songs and stages are drawn like the disc's (ui.cpp) */
     ml_put(styles, "# kind (0 song, 1 selected song, 2 stage) cap_height baseline margin width_milli top bottom outline\n");
     for (i = 0; i < 3; i++) {
@@ -1188,10 +1279,14 @@ static int ml_tsv(MlCtx *c, MlText *labels, MlText *styles, int *count) {
             return ml_fail(c, "%s: the catalogue's text cannot be a label", r->id);
         }
         /* (the width of the artwork is aimed at only by the label that artwork shows) */
-        ml_put(labels, "%016llx\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t1000\t%d\t%d\t%d\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t%d\t%s\n", (unsigned long long)r->hash,
+        ml_put(labels, "%016llx\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t1000\t%d\t%d\t%d\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t%d\t%s\t%d\t%s\t%s\t%s\n", (unsigned long long)r->hash,
                r->texW, r->texH, r->y, r->height, r->cap, r->baseline, r->center, r->margin, r->x, r->w, strcmp(text, r->text) == 0 ? r->art : 0,
                ml_hex(col->top, top), ml_hex(col->bottom, bottom), ml_hex(col->outline, outline), r->italic,
-               col->outlineWidth < 0 ? -1 : col->outlineWidth * 1000, col->outerWidth * 1000, ml_hex(col->outerColor, outer), col->shadow, text);
+               col->outlineWidth < 0 ? -1 : col->outlineWidth * 1000, col->outerWidth * 1000, ml_hex(col->outerColor, outer), col->shadow,
+               ml_hex(r->colors == ML_MAIN_HEADING ? kHeadingOutlineBottom : col->outline, outlineBottom),
+               r->colors == ML_MAIN_HEADING ? 1000 : 0,
+               ml_hex(r->colors == ML_MAIN_HEADING ? kHeadingBevelLight : col->top, bevelLight),
+               ml_hex(r->colors == ML_MAIN_HEADING ? kHeadingBevelDark : col->outline, bevelDark), text);
         ++*count;
     }
     if (*count > ML_ROWS) {
@@ -1236,25 +1331,32 @@ static int ml_json(MlCtx *c, MlText *t) {
     int i;
 
     ml_put(t, "{\n  \"color_styles\": {\n");
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < (int)(sizeof(kMlColors) / sizeof(kMlColors[0])); i++) {
         const MlColors *col = &kMlColors[i];
         int more = col->outlineWidth >= 0 || col->outer || !col->shadow;
         ml_put(t, "    \"%s\": {\n", col->name);
         ml_json_rgb(t, "top", col->top, ",");
         ml_json_rgb(t, "bottom", col->bottom, ",");
         ml_json_rgb(t, "outline", col->outline, more ? "," : "");
-        if (more) { /* (the one style that sets these sets all of them) */
+        if (more) {
             ml_put(t, "      \"outline_width\": %d,\n", col->outlineWidth);
             ml_json_rgb(t, "outer_outline", col->outerColor, ",");
-            ml_put(t, "      \"outer_outline_width\": %d,\n      \"shadow\": %s\n", col->outerWidth, col->shadow ? "true" : "false");
+            ml_put(t, "      \"outer_outline_width\": %d,\n", col->outerWidth);
+            if (i == ML_MAIN_HEADING) {
+                ml_json_rgb(t, "outline_bottom", kHeadingOutlineBottom, ",");
+                ml_put(t, "      \"bevel_width\": 1,\n");
+                ml_json_rgb(t, "bevel_light", kHeadingBevelLight, ",");
+                ml_json_rgb(t, "bevel_dark", kHeadingBevelDark, ",");
+            }
+            ml_put(t, "      \"shadow\": %s\n", col->shadow ? "true" : "false");
         }
-        ml_put(t, "    }%s\n", i < 3 ? "," : "");
+        ml_put(t, "    }%s\n", i + 1 < (int)(sizeof(kMlColors) / sizeof(kMlColors[0])) ? "," : "");
     }
     ml_put(t, "  },\n  \"labels\": [\n");
     for (i = 0; i < c->nRows; i++) {
         const MlRow *r = &c->rows[i];
         ml_put(t, "    {\n      \"id\": \"%s\",\n      \"hash\": \"%016llx\",\n", r->id, (unsigned long long)r->hash);
-        if (r->isRect) {
+        if (r->isRect || r->x != 0 || r->w != r->texW) {
             ml_put(t, "      \"texture_width\": %d,\n      \"texture_height\": %d,\n      \"x\": %d,\n      \"y\": %d,\n      \"width\": %d,\n", r->texW, r->texH,
                    r->x, r->y, r->w);
         } else {
@@ -1267,7 +1369,7 @@ static int ml_json(MlCtx *c, MlText *t) {
         ml_put(t, ",\n      \"enabled\": true,\n      \"height\": %d,\n      \"cap_height\": %d,\n      \"baseline\": %d,\n      \"align\": \"%s\",\n"
                   "      \"margin\": %d,\n      \"art_width\": %d,\n",
                r->height, r->cap, r->baseline, r->center ? "center" : "left", r->margin, r->art);
-        if (!r->isRect && r->texW != 512) {
+        if (!r->isRect && r->x == 0 && r->w == r->texW && r->texW != 512) {
             ml_put(t, "      \"texture_width\": %d,\n", r->texW);
         }
         if (r->textFrom[0] != '\0') {
@@ -1331,7 +1433,7 @@ static uint32_t ml_crc32(const uint8_t *p, size_t n) {
     return ~crc;
 }
 
-/* Reads the ten archives. Returns MENU_LABELS_MADE when they are all there and (unless `anyDisc`) the USA disc's. */
+/* Reads the eleven archives. Returns MENU_LABELS_MADE when they are all there and (unless `anyDisc`) the USA disc's. */
 static int ml_read_disc(MlCtx *c, const char *dataDir, int anyDisc) {
     int i;
 

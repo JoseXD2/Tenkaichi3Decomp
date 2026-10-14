@@ -3132,7 +3132,7 @@ Two settings in F1 > UI, both "Original" unless chosen:
   hands the renderer the game's glyph table; the renderer packs the new glyphs into an atlas of its own and moves
   the sprite's texture coordinates there. The game's placement, line breaks, colours and shadows are untouched.
 
-The fonts (DejaVu Sans Condensed and Condensed Bold, Liberation Sans Bold, with their licences) are in
+The bundled fonts (DejaVu Sans Condensed for Dialogue / UI and Condensed Bold for menus, with their licence) are in
 `port/third_party/fonts`, with the list `fonts.tsv`; a release has them as `fonts/`.
 
 What was changed on top of the pull request:
@@ -3194,7 +3194,8 @@ What was changed on top of the pull request:
    request's build: 112 of 113 the same bytes (the one, frame 1460, shows another hint line of the main menu in a
    fade: the game was at another moment there, the lettering is the same; two runs of one build differ in that
    frame too when several copies run at once).
-7. DejaVu Sans Condensed was in the repository twice (once per setting); it is there once and listed for both.
+7. DejaVu Sans Condensed was in the repository twice (once per setting); it is there once. It was listed for both
+   settings at the time of this change and is now listed only for Dialogue / UI.
    The dead font-building code in the tool is gone. The notes said the game's ordinary text is unaffected; the
    second setting replaces exactly that, and they say so now.
 
@@ -3312,3 +3313,66 @@ Not tested: Windows at run time beyond the maker under wine (the Windows build l
 and the drawing were not run there); a release package made with `package.py` and its setup (the game was run
 with `BT3_DATA` pointing at a folder like a release's `gamedata`); the settings window during the hand-over (read
 in the code, not operated); the OpenGL renderer; macOS.
+
+## White dots on a shiny character (2026-10-14)
+
+Reported by the user: Perfect Cell's black, glossy parts had small white dots scattered over them. Replayed from
+a recording of the user's presses (New Game, Duel, Goku against Perfect Cell) without a window: the dots are in
+0.1.34's picture, not in the software reference's (`BT3_GS=1`), and not with `BT3_NZ=0`. So they came with the
+rule of 0.1.31 that draws without the shader's own depth where "it changes nothing" (gs_draw.c, key bit 23).
+
+Why it did change something: the full shader writes `floor(z * steps) / steps`, worked out in floats, and that can
+come out one last bit of the float ABOVE the depth the chip interpolates for the very same triangle. A second
+layer over the same triangles that does not write depth (the gloss) is then tested with the interpolated depth
+against a stored value one bit larger, fails "greater or equal", and the pixel keeps the layer below: a dot.
+
+Fix, first try (2080bfe, tagged v0.1.34.1 but never published): a depth bias of two float bits on the pipelines
+of bit 23. Wrong: with 16 million depth steps a step is about one such bit near the far end, so the bias was a
+step or two, and the user saw layers that should lose by one step win (shadow layers over clothes).
+
+Fix as it is now, in the shader that writes depth (gs.frag): where the division came out above z, the step below
+is written, so what is stored is never above the z it came from. Then "z >= stored" and "step of z >= stored" are
+the same thing, which is what the rule of bit 23 assumed, and nothing is biased.
+
+Checked with the recording, 60 pictures of the fight, every pixel: the default and `BT3_NZ=0` give the same
+picture in all 60 (0.1.34: 45 of 60 differ, by up to 328 pixels; the bias: 12 of 60, by 1 or 2 pixels). Against
+0.1.34's own full-shader picture, 8 of the 60 differ in one pixel each (the step below, where 0.1.34 wrote the
+step above). The replay check is unchanged.
+Not checked: Windows (Direct3D 12), macOS (Metal) and the OpenGL back end; other shiny characters; the scene in
+which the user saw the shadow layers (not in the recording).
+
+## Input lag: measured, and "Low input lag" (2026-10-14)
+
+Asked by the user: how large is the input lag, can it be lowered, or is it fixed by the game?
+
+`BT3_LAG_LOG=1` prints when things happen, in microseconds: `V` a vertical blank (after its wait), `W` the game
+arriving at a blank's wait, `R` a pad read, `E` the window's events taken (a controller's state is renewed then),
+`S` a picture handed to the window, `L` the owed blanks waited for (below). Measured with a recording of the user's
+(a fight against Perfect Cell), replayed at real speed without a window on an integrated graphics chip:
+
+- A fight's tick is two vertical blanks, 33.4 ms; a menu's is one.
+- The game's own order in a tick: read the pads, compute, give the drawing commands, THEN wait for the blanks,
+  then the picture is shown. Computing took 1.1 ms and showing 2 ms here, the wait the other 30.
+- So from a pad read to its picture: 33.35 ms (median). The controller's state was 1.1 ms old when read.
+- The game adds no tick of its own on top: with a recording cut off before a stick push and one that has it, the
+  very first picture after the read differs (movement; other actions have their own start-up frames).
+
+What is the game's: the 30 ticks a second of a fight (a press waits up to 33 ms, 17 on average, for the next
+read) and each action's start-up. What was the port's to give: the 30 ms of waiting between computing a tick and
+showing it. The console has the same wait and then draws and shows at the following blanks, so the port was already
+ahead of it.
+
+"Low input lag (experimental)" (F1 > Video; setting `late_input`; `BT3_LATE_INPUT=0/1`), off by default: a blank
+the game asks for is not waited for there but owed (at most two) and waited for just before the next pad read
+(plat_stub.c `late_wait`), where the controllers' state is renewed first (`PortInput_Fresh`). The tick is as long
+as before; the pads are read at its end instead of its start. Nothing of the game's state changes: the same reads
+and blanks in the same order. Not in an online session, and not with in-between pictures.
+
+Measured the same way with it on: read to picture 3.0 ms (median; 99% 3.5 ms), the controller's state 0.01 ms
+old, the tick 33.37 ms as before. The recording's pictures are the same with it on and off (seven compared), and
+the replay check is unchanged.
+
+Not checked: with a window on a real display, and by feel; the sound (the game's sound step runs at each blank,
+and those now come two at once in a fight); V-sync on; Windows and macOS; a machine too slow to compute and show
+a tick in time, where the picture then comes late instead of the game's start of the tick.
+

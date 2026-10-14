@@ -66,9 +66,9 @@ static void setup(void) {
     fclose(fp);
     snprintf(path, sizeof(path), "%s/labels.tsv", sDir);
     fp = fopen(path, "wb");
-    fprintf(fp, "# BT3 menu text v6: made by port/tests/menu_font/fuzz.c\n");
+    fprintf(fp, "# " MENU_LABELS_VERSION " made by port/tests/menu_font/fuzz.c\n");
     for (n = 0; n < 8; n++) { /* eight rows of 8 pixels: plain, centred, italic, measured width, outer outline, no shadow */
-        fprintf(fp, "%016llx\t64\t64\t%d\t8\t%d\t%d\t%d\t%d\t%d\t0\t64\t%d\tf4ef89\td2684b\t2c151b\t%d\t%d\t%d\td9c2c1\t%d\t%s\n",
+        fprintf(fp, "%016llx\t64\t64\t%d\t8\t%d\t%d\t%d\t%d\t%d\t0\t64\t%d\tf4ef89\td2684b\t2c151b\t%d\t%d\t%d\td9c2c1\t%d\t2c151b\t0\tf4ef89\t2c151b\t%s\n",
                 (unsigned long long)hash, n * 8, 4 + n % 4, 6 + n % 3, n & 1, n % 5, 500 + n * 200, n == 3 ? 40 : 0,
                 n == 2 || n == 6, n == 4 ? 2000 : -1, n == 4 ? 2000 : 0, n != 5, kTexts[n]);
     }

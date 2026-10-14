@@ -124,8 +124,19 @@ void main() {
     // A shader that writes depth costs: the graphics chip can no longer leave out hidden pixels before running it
     // (a quarter of the frame rate on an integrated chip, measured). So only what needs it is drawn with this:
     // see pipeline_get in gs_draw.c for which draws get the variant without (NO_FRAG_DEPTH).
+    // The whole number is kept as a float again, and floor(z * steps) / steps, worked out in floats, can come out
+    // one last bit ABOVE z itself. A draw without this output (NO_FRAG_DEPTH) is tested with z as it is, so a
+    // second layer on the very same triangles then lost "greater or equal" against what the first had written,
+    // here and there: white dots on a shiny character (0.1.31 to 0.1.34). So what is written is never above z:
+    // where the division came out above, the step below is taken. With that, "z >= what is stored" is the same
+    // as "the step of z >= what is stored", which is what the variant without the output relies on.
 #ifndef NO_FRAG_DEPTH
-    gl_FragDepth = p.extra.x > 0.0 && p.extra.x < 2.0e7 ? floor(gl_FragCoord.z * p.extra.x) / p.extra.x : gl_FragCoord.z;
+    if (p.extra.x > 0.0 && p.extra.x < 2.0e7) {
+        float zn = floor(gl_FragCoord.z * p.extra.x), zq = zn / p.extra.x;
+        gl_FragDepth = zq > gl_FragCoord.z ? (zn - 1.0) / p.extra.x : zq;
+    } else {
+        gl_FragDepth = gl_FragCoord.z;
+    }
 #endif
     outColor = vec4(clamp(rgb, 0.0, 1.0), clamp(a, 0.0, 1.0));
     float ab = clamp(a * 128.0 / 255.0, 0.0, 1.0);

@@ -45,6 +45,10 @@ and the fight's gauges are spoken and shown in braille. a11y_es.txt is its Spani
 a11y_<code>.txt of the same kind, and lines of your own go into a11y_<code>_own.txt, which no update replaces.
 
 This package contains no game data. The game's data comes from your disc and stays on your computer.
+
+The port's own code is under the GNU AGPL, version 3 (licenses/tenkaichi3decomp-agpl.txt; code from before the
+change of licence also under MIT, licenses/tenkaichi3decomp-mit.txt). Its source, this release's tag included:
+https://github.com/z3xox/Tenkaichi3Decomp
 """
 
 WIN_README = README.replace("(Linux, 64-bit)", "(Windows, 64-bit)").replace("Start  Tenkaichi3Decomp-setup\n", "Start  Tenkaichi3Decomp-setup.exe\n") \
@@ -182,6 +186,8 @@ def main_win():
     lic = out / "licenses"
     lic.mkdir()
     bundle_sdl_dependencies(dll, out, lic, toolchain.PREFIX)
+    shutil.copy2(ROOT / "LICENSE", lic / "tenkaichi3decomp-agpl.txt")
+    shutil.copy2(ROOT / "LICENSE-MIT", lic / "tenkaichi3decomp-mit.txt")
     shutil.copy2(ROOT / "port/third_party/imgui/LICENSE.txt", lic / "dear-imgui.txt")
     shutil.copy2(ROOT / "port/third_party/newlib_libm/COPYING.NEWLIB", lic / "newlib.txt")
     shutil.copy2(ROOT / "port/third_party/xxhash/LICENSE", lic / "xxhash.txt")
@@ -226,6 +232,8 @@ def main():
     (OUT / "README.txt").write_text(README)
     lic = OUT / "licenses"
     lic.mkdir()
+    shutil.copy2(ROOT / "LICENSE", lic / "tenkaichi3decomp-agpl.txt")
+    shutil.copy2(ROOT / "LICENSE-MIT", lic / "tenkaichi3decomp-mit.txt")
     shutil.copy2(ROOT / "port/third_party/imgui/LICENSE.txt", lic / "dear-imgui.txt")
     shutil.copy2(ROOT / "port/third_party/newlib_libm/COPYING.NEWLIB", lic / "newlib.txt")
     shutil.copy2(ROOT / "port/third_party/xxhash/LICENSE", lic / "xxhash.txt")

@@ -10,7 +10,6 @@ unless chosen, and with "Original" nothing of this is active.
 
 So the Dialogue / UI font does change the game's ordinary `Font_Print` text: that is what it is for. Placement,
 line breaks, colours, shadows and the button icons stay the game's; only the glyph pictures are drawn again.
-Decorative headings and the story's battle titles keep their original artwork with both settings.
 
 ## The fonts
 
@@ -19,9 +18,8 @@ with its licence, and the list `fonts.tsv`:
 
 ```
 # file <tab> name in the list <tab> use: 1 = Menu font, 2 = Dialogue / UI font, 3 = both
-dejavu/DejaVuSansCondensed.ttf	DejaVu Sans Condensed	3
 dejavu/DejaVuSansCondensed-Bold.ttf	DejaVu Sans Condensed Bold	1
-liberation/LiberationSans-Bold.ttf	Liberation Sans Bold	1
+dejavu/DejaVuSansCondensed.ttf	DejaVu Sans Condensed	2
 ```
 
 To add a font, put the `.ttf` there and add a line; restart the game. A font has to be a static TrueType file
@@ -32,30 +30,30 @@ A font file is checked when it is chosen and at every start. One that is cut sho
 not used: the setting goes back to "Original", and the log has one line with the reason, for example
 
 ```
-bt3: font "Liberation Sans Bold" (fonts/liberation/LiberationSans-Bold.ttf) is not used: a table lies outside
+bt3: font "DejaVu Sans Condensed Bold" (fonts/dejavu/DejaVuSansCondensed-Bold.ttf) is not used: a table lies outside
 the file (the file is cut short or damaged). The setting is back on "Original".
 ```
 
-Bundled: DejaVu Sans Condensed and Condensed Bold (Bitstream Vera licence, `dejavu/LICENSE`) and Liberation Sans
-Bold (SIL Open Font License 1.1, `liberation/LICENSE`).
+Bundled: DejaVu Sans Condensed for Dialogue / UI and Condensed Bold for menus (Bitstream Vera licence,
+`dejavu/LICENSE`).
 
 ## The menu labels
 
 Which texture has which label, and how large its letters are, is measured on your own disc data. The game does it
 itself (`port/src/gs/menu_labels.c`), in a source installation and in a release alike: when it starts with a
-window and `gamedata/game-text/labels.tsv` is not there, or is of an older format, it reads the ten menu archives
-`gamedata/pzs3us1/00448.bin` ... `00463.bin` and writes `gamedata/game-text/`:
+window and `gamedata/game-text/labels.tsv` is not there, or does not have the current header, it reads eleven
+menu archives, `gamedata/pzs3us1/00448.bin` ... `00472.bin`, and writes `gamedata/game-text/`:
 
 - `labels.tsv` and `name-styles.tsv`: what the game reads;
 - `labels.json`: the same list for a person to edit (below). One that is already there is kept as it is.
 
-This takes about a quarter of a second and runs in the background: the game does not wait for it. Until it is
+This takes less than a second and runs in the background: the game does not wait for it. Until it is
 done "Menu font" offers only "Original"; then the fonts appear in the list, and a font that the settings file
-already names is taken into use between two frames (a menu on screen at that moment changes its lettering). The
-log says `bt3: menu text: the list of labels was made from the disc (397 labels, 207 ms) in gamedata/game-text`.
+already names is taken into use between two frames (a menu on screen at that moment changes its lettering).
+The log reports that it made 426 labels from the disc; the measured time varies.
 Each file is written under another name and renamed when complete: a list is never half there.
 
-The texture numbers are those of the USA release (SLUS-21678), so the ten archives are checked by size and CRC-32
+The texture numbers are those of the USA release (SLUS-21678), so the eleven archives are checked by size and CRC-32
 before anything is read from them. With any other disc, a missing archive or a folder that cannot be written to,
 nothing is made, the log has one line saying why, and "Menu font" offers only "Original"; the game is otherwise
 unaffected. (It is tried again at the next start.) `BT3_MENU_FONT_ANY_DISC=1` leaves the check out, for a changed
@@ -86,6 +84,18 @@ No game rebuild or archive repacking is needed. The tool turns `labels.json` int
 `port/tools/menu_font.py` from the source and name the folder: `python3 menu_font.py --out <game>/gamedata/game-text`.
 The game itself never reads `labels.json` and never writes over one. To go back to the disc's labels, delete
 `labels.json` and `labels.tsv`: the game writes both again at its next start.
+An existing `labels.json` also needs regenerating to include newly catalogued headings; keep a copy first if you
+have edited its labels or styles, then reapply those edits to the new file.
+
+To see one original and replacement example for each menu color style, run from the repository root:
+
+```sh
+python3 port/tools/menu_font.py --compare-styles
+```
+
+The command writes `port/build/menu-font/style-comparison.png`, names the font used, and applies current
+`labels.json` edits before rendering. It uses DejaVu Sans Condensed Bold by default and needs the extracted disc
+data, Pillow, and a C compiler. Set the PNG path with `--output path/to/comparison.png`.
 
 | field | effect |
 |---|---|
@@ -117,6 +127,7 @@ Styles apply across selectable typefaces. Colors are defined explicitly; artwork
 |---|---|---|---|
 | `purple` | Most unselected labels and unselected song names | White `#FFFFFF` | Purple `#460059` |
 | `main-menu` | Unselected main-menu labels | Light gray `#CBCBCB` | Lighter purple `#5E236D` |
+| `main-heading` | Large headings in the main and submenu screens | Gold `#FFBE2F` → red `#FF2222` | Dark brown `#7C3025`, darkening at the base |
 | `orange` | Selected labels, stage names and character-preview numbers | Yellow `#F4EF89` → orange `#D2684B` | Dark brown `#2C151B` |
 | `title-prompt` | “Press START button” | Cream `#EFEFDF` → yellow-green `#B1B360` | Dark red `#3F1511` |
 
@@ -131,10 +142,20 @@ Added song and stage names share the corresponding fill and outline colors.
 | `outline_width` | Optional width, 0–8 original texture pixels; default automatic, usually 3 |
 | `outer_outline` | Optional outer outline RGB color |
 | `outer_outline_width` | Width, 0–8 original texture pixels; default 0 (disabled) |
+| `outline_bottom` | Optional color at the bottom of the inner outline; defaults to `outline` |
+| `bevel_width` | Optional border bevel width, 0–4 original texture pixels; default 0 |
+| `bevel_light`, `bevel_dark` | Highlight and recess colors within the border; the fill remains a plain gradient |
 | `shadow` | Offset shadow; default `true` |
 
+All editable menu font styles use circular, smoothly antialiased borders, including added song and stage names.
 `title-prompt` uses a 2-pixel inner outline, a 2-pixel pale outer outline (`#D9C2C1`), and no shadow.
 Its label also enables `italic`; italic is a label setting, separate from the shared color style.
+`main-heading` has a plain gold-to-red face and a three-pixel brown border with darker bottom and right-facing
+bands. A two-pixel cream rim surrounds the border and grows slightly thicker above the letters; there is no shadow.
+The catalog includes the large headings for Dragon History, Ultimate Battle and its modes, Dragon World Tour,
+Evolution Z and Item Shop, Map Select and BGM Select, Ultimate Training and Battle Training, Data Center and its
+screens, Character Reference, Options and its screens, and Shenron. The Basic, Intermediate, and Advanced titles
+shown after entering Battle Training use this style too; their smaller menu choices use the normal choice styles.
 After editing styles, run `python3 port/tools/menu_font.py` and restart the game. A style has to be in the file
 with its three colours: the tool has no table of its own to fall back on.
 
@@ -143,11 +164,13 @@ with its three colours: the tool has no table of its own to fall back on.
 - `port/third_party/fonts/` (release: `fonts/`): the typefaces, their licences and `fonts.tsv`. `BT3_FONTS` names
   another folder; an empty value switches both settings off.
 - `gamedata/game-text/` (or `$BT3_DATA/game-text`): the labels made from the disc; ignored by Git, never packaged.
+  Colors, outlines, and bevel effects share the v7 `labels.tsv` layout.
   `BT3_MENU_FONT` names another folder; an empty value switches the Menu font off (and nothing is made).
 - `port/src/gs/menu_labels.c`: makes the list. It holds the catalogue (`ml_catalog`: which archive, section and
   texture a menu's labels are in, and what they say) and nothing of the disc; the stage and song names are
   `namefont.c`'s tables, and its letter cutter measures the long name strips. To add a menu, add its sheets there.
-- `port/tools/menu_font.py`: an edited `labels.json` into the files the game reads. `--out` names the folder.
+- `port/tools/menu_font.py`: an edited `labels.json` into the files the game reads; `--compare-styles` renders a PNG.
+  `--out` names the folder.
 - `port/src/gs/menu_text.c`: the font check, the drawing and the list of fonts, for Vulkan and OpenGL. Text is
   drawn at the internal resolution, at least 2 and at most 4 times the PS2's.
 - `port/src/gs/ui.cpp`: the two settings, and the names of added songs and stages.

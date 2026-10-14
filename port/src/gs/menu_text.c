@@ -380,7 +380,7 @@ static int file_there(const char *path) {
     return fp != NULL;
 }
 
-/* What labels.tsv the folder has: 0 none, 1 one of the format written now, 2 an older one. */
+/* What labels.tsv the folder has: 0 none, 1 the current layout, 2 an older layout. */
 static int labels_state(void) {
     char path[1200], line[256];
     FILE *fp;
@@ -598,9 +598,9 @@ int MenuText_RasterScale(int internalScale) { return internalScale < 2 ? 2 : int
 typedef struct MenuLabel {
     uint64_t hash;
     int width, height, y, rowHeight, cap, baseline, center, margin, widthMilli, x, rowWidth, artWidth;
-    unsigned top, bottom, outline;
+    unsigned top, bottom, outline, outlineBottom, bevelLight, bevelDark;
     int italic;
-    int outlineMilli, outerMilli, shadow;
+    int outlineMilli, outerMilli, shadow, bevelMilli;
     unsigned outerColor;
     char text[256];
 } MenuLabel;
@@ -643,6 +643,7 @@ static void menu_text_name_styles(const char *dir) {
         label->top = selected ? 0xF4EF89 : 0xCBCBCB;
         label->bottom = selected ? 0xD2684B : 0xCBCBCB;
         label->outline = selected ? 0x2C151B : 0x460059;
+        label->outlineBottom = label->outline;
     }
     snprintf(path, sizeof(path), "%s/name-styles.tsv", dir);
     fp = fopen(path, "rb");
@@ -661,6 +662,7 @@ static void menu_text_name_styles(const char *dir) {
         label.width = label.rowWidth = 512; label.height = label.rowHeight = selected == 2 ? 64 : 32;
         label.center = selected == 2;
         label.outlineMilli = -1; label.shadow = 1; /* (as the disc names of labels.tsv: the outline by the size, the drop shadow on) */
+        label.outlineBottom = label.outline;
         sNameStyles[selected] = label;
     }
     fclose(fp);
@@ -670,7 +672,7 @@ static void menu_text_name_styles(const char *dir) {
 static void menu_text_labels(void) {
     char path[1200], line[1024];
     FILE *fp;
-    int version = 1, i, k;
+    int i, k;
 
     if (sLabelsLoaded) { return; }
     sLabelsLoaded = 1;
@@ -684,45 +686,18 @@ static void menu_text_labels(void) {
         unsigned long long hash;
         int pos = 0, i;
         size_t n;
-        if (line[0] == '#') { if (strstr(line, "BT3 menu text v6:")) { version = 6; } else if (strstr(line, "BT3 menu text v5:")) { version = 5; } else if (strstr(line, "BT3 menu text v4:")) { version = 4; } else if (strstr(line, "BT3 menu text v3:")) { version = 3; } else if (strstr(line, "BT3 menu text v2:")) { version = 2; } continue; }
+        if (line[0] == '#') { continue; }
         memset(&label, 0, sizeof(label));
-        label.widthMilli = 1000;
-        label.outlineMilli = -1; label.shadow = 1;
-        if (version == 6) {
-            if (sscanf(line, "%llx\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%x\t%x\t%x\t%d\t%d\t%d\t%x\t%d\t%n",
-                       &hash, &label.width, &label.height, &label.y, &label.rowHeight, &label.cap,
-                       &label.baseline, &label.center, &label.margin, &label.widthMilli, &label.x, &label.rowWidth,
-                       &label.artWidth, &label.top, &label.bottom, &label.outline, &label.italic,
-                       &label.outlineMilli, &label.outerMilli, &label.outerColor, &label.shadow, &pos) != 21 || pos == 0) { continue; }
-        } else if (version == 5) {
-            if (sscanf(line, "%llx\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%x\t%x\t%x\t%d\t%n",
-                       &hash, &label.width, &label.height, &label.y, &label.rowHeight, &label.cap,
-                       &label.baseline, &label.center, &label.margin, &label.widthMilli, &label.x, &label.rowWidth,
-                       &label.artWidth, &label.top, &label.bottom, &label.outline, &label.italic, &pos) != 17 || pos == 0) { continue; }
-        } else if (version == 4) {
-            if (sscanf(line, "%llx\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%x\t%x\t%x\t%n",
-                       &hash, &label.width, &label.height, &label.y, &label.rowHeight, &label.cap,
-                       &label.baseline, &label.center, &label.margin, &label.widthMilli, &label.x, &label.rowWidth,
-                       &label.artWidth, &label.top, &label.bottom, &label.outline, &pos) != 16 || pos == 0) { continue; }
-        } else if (version == 3) {
-            if (sscanf(line, "%llx\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%x\t%x\t%x\t%n",
-                       &hash, &label.width, &label.height, &label.y, &label.rowHeight, &label.cap,
-                       &label.baseline, &label.center, &label.margin, &label.widthMilli, &label.x, &label.rowWidth,
-                       &label.top, &label.bottom, &label.outline, &pos) != 15 || pos == 0) { continue; }
-        } else if (version == 2) {
-            if (sscanf(line, "%llx\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%x\t%x\t%x\t%n",
-                       &hash, &label.width, &label.height, &label.y, &label.rowHeight, &label.cap,
-                       &label.baseline, &label.center, &label.margin, &label.widthMilli,
-                       &label.top, &label.bottom, &label.outline, &pos) != 13 || pos == 0) { continue; }
-        } else {
-            if (sscanf(line, "%llx\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%x\t%x\t%x\t%n",
-                       &hash, &label.width, &label.height, &label.y, &label.rowHeight, &label.cap,
-                       &label.baseline, &label.center, &label.margin, &label.top, &label.bottom,
-                       &label.outline, &pos) != 12 || pos == 0) { continue; }
-        }
-        if (version < 3) { label.rowWidth = label.width; }
+        if (sscanf(line, "%llx\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%x\t%x\t%x\t%d\t%d\t%d\t%x\t%d\t%x\t%d\t%x\t%x\t%n",
+                   &hash, &label.width, &label.height, &label.y, &label.rowHeight, &label.cap,
+                   &label.baseline, &label.center, &label.margin, &label.widthMilli, &label.x, &label.rowWidth,
+                   &label.artWidth, &label.top, &label.bottom, &label.outline, &label.italic,
+                   &label.outlineMilli, &label.outerMilli, &label.outerColor, &label.shadow,
+                   &label.outlineBottom, &label.bevelMilli, &label.bevelLight, &label.bevelDark, &pos) != 25 || pos == 0) { continue; }
         if (label.outlineMilli < -1 || label.outlineMilli > 8000 || label.outerMilli < 0 || label.outerMilli > 8000 ||
-            label.outerColor > 0xFFFFFF || label.shadow < 0 || label.shadow > 1) { continue; }
+            label.outerColor > 0xFFFFFF || label.shadow < 0 || label.shadow > 1 ||
+            label.outlineBottom > 0xFFFFFF || label.bevelMilli < 0 || label.bevelMilli > 4000 ||
+            label.bevelLight > 0xFFFFFF || label.bevelDark > 0xFFFFFF) { continue; }
         n = strcspn(line + pos, "\r\n");
         if (n == 0 || n >= sizeof(label.text) || (label.width < 8 || label.width > MENU_TEXT_WIDTH || (label.width & (label.width - 1))) || label.height < 1 || label.height > MENU_TEXT_HEIGHT ||
             label.y < 0 || label.rowHeight < 1 || label.rowHeight > 64 || label.y > label.height - label.rowHeight ||
@@ -849,10 +824,41 @@ static int menu_text_codes(const char *text, int *glyphs) {
 /* Draws a label into out (malloc'ed box). Only the box that can have anything in it is worked on: the letters'
    own, widened by the outline, the shadow's blur and the shadow's offset. 0: nothing drawn (the row keeps the
    original). */
+static void menu_text_distance_line(const float *src, float *dst, int length, int stride,
+                                    int *sites, float *bounds) {
+    int q, k = -1;
+    for (q = 0; q < length; q++) {
+        float value = src[q*stride], crossing;
+        if (value >= 1e11f) { continue; }
+        while (k >= 0) {
+            int p = sites[k];
+            crossing = ((value + (float)q*q) - (src[p*stride] + (float)p*p)) / (2*(q-p));
+            if (crossing > bounds[k]) { break; }
+            k--;
+        }
+        if (k < 0) { k = 0; bounds[0] = -1e12f; }
+        else { bounds[++k] = crossing; }
+        sites[k] = q;
+        bounds[k+1] = 1e12f;
+    }
+    if (k < 0) {
+        for (q = 0; q < length; q++) { dst[q*stride] = 1e12f; }
+        return;
+    }
+    k = 0;
+    for (q = 0; q < length; q++) {
+        int p;
+        while (bounds[k+1] < q) { k++; }
+        p = sites[k];
+        dst[q*stride] = (float)(q-p)*(q-p) + src[p*stride];
+    }
+}
+
 static int menu_text_row(const MenuLabel *label, int resolution, Row *out) {
     typedef struct Ink { unsigned char *bitmap; int w, h, x, y; } Ink;
     unsigned char *fill = NULL, *body = NULL, *blur = NULL, *outer = NULL;
-    float *distance = NULL;
+    float *distance = NULL, *rowDistance = NULL, *bounds = NULL, *bevelDistance = NULL;
+    int *sites = NULL;
     Ink *ink;
     int glyphs[256], len = menu_text_codes(label->text, glyphs);
     int i, x, y, c, advance, bearing, previous = 0, width = 0, ok = 0;
@@ -956,8 +962,14 @@ static int menu_text_row(const MenuLabel *label, int resolution, Row *out) {
     if (label->outerMilli) { outer = malloc((size_t)count); }
     blur = malloc((size_t)count);
     distance = malloc((size_t)count * sizeof(float));
+    rowDistance = malloc((size_t)count * sizeof(float));
+    sites = malloc((size_t)(fw > fh ? fw : fh) * sizeof(int));
+    bounds = malloc((size_t)((fw > fh ? fw : fh) + 1) * sizeof(float));
+    if (label->bevelMilli) { bevelDistance = malloc((size_t)count * sizeof(float)); }
     out->px = malloc((size_t)count * 4);
-    if (fill == NULL || body == NULL || blur == NULL || distance == NULL || out->px == NULL || (label->outerMilli && outer == NULL)) {
+    if (fill == NULL || body == NULL || blur == NULL || distance == NULL || rowDistance == NULL ||
+        sites == NULL || bounds == NULL || out->px == NULL || (label->outerMilli && outer == NULL) ||
+        (label->bevelMilli && bevelDistance == NULL)) {
         free(out->px);
         out->px = NULL;
         goto done;
@@ -992,40 +1004,41 @@ static int menu_text_row(const MenuLabel *label, int resolution, Row *out) {
             }
         }
     }
-    /* Two distance sweeps keep rounded outlines inexpensive at high texture resolutions. */
-    for (i = 0; i < count; i++) { distance[i] = fill[i] ? 1.0f - fill[i]/255.0f : 1e6f; }
+    /* Exact circular distances give every style rounded outlines, including diagonal corners. */
+    for (i = 0; i < count; i++) {
+        float uncovered = 1.0f - fill[i]/255.0f;
+        distance[i] = fill[i] ? uncovered*uncovered : 1e12f;
+    }
+    for (y = 0; y < fh; y++) {
+        menu_text_distance_line(distance+y*fw, rowDistance+y*fw, fw, 1, sites, bounds);
+    }
+    for (x = 0; x < fw; x++) {
+        menu_text_distance_line(rowDistance+x, distance+x, fh, fw, sites, bounds);
+    }
+    for (i = 0; i < count; i++) { distance[i] = sqrtf(distance[i]); }
     for (y = 0; y < fh; y++) {
         for (x = 0; x < fw; x++) {
             int at = y*fw+x;
-            float d = distance[at];
-            if (x) { d = fminf(d, distance[at-1]+1); }
-            if (y) {
-                d = fminf(d, distance[at-fw]+1);
-                if (x) { d = fminf(d, distance[at-fw-1]+1.414214f); }
-                if (x+1 < fw) { d = fminf(d, distance[at-fw+1]+1.414214f); }
-            }
-            distance[at] = d;
-        }
-    }
-    for (y = fh-1; y >= 0; y--) {
-        for (x = fw-1; x >= 0; x--) {
-            int at = y*fw+x;
             float d = distance[at], coverage;
-            if (x+1 < fw) { d = fminf(d, distance[at+1]+1); }
-            if (y+1 < fh) {
-                d = fminf(d, distance[at+fw]+1);
-                if (x) { d = fminf(d, distance[at+fw-1]+1.414214f); }
-                if (x+1 < fw) { d = fminf(d, distance[at+fw+1]+1.414214f); }
-            }
-            distance[at] = d;
-            coverage = fminf(1, fmaxf(0, border*resolution + 0.5f - d));
+            coverage = fminf(1, fmaxf(0, border + 0.5f - d/resolution));
+            coverage = coverage*coverage*(3-2*coverage);
             body[at] = (unsigned char)fmaxf(fill[at], coverage*255);
             if (outer != NULL) {
-                coverage = fminf(1, fmaxf(0, (border + label->outerMilli/1000.0f)*resolution + 0.5f - d));
+                float extraTop = 0;
+                if (label->bevelMilli) {
+                    int up = y >= resolution ? y-resolution : 0;
+                    int down = y+resolution < fh ? y+resolution : fh-1;
+                    float facing = (distance[up*fw+x] - distance[down*fw+x])/(2.0f*resolution);
+                    extraTop = 0.6f*fminf(1, fmaxf(0, facing));
+                }
+                coverage = fminf(1, fmaxf(0, border + label->outerMilli/1000.0f +
+                                            extraTop + 0.5f - d/resolution));
+                coverage = coverage*coverage*(3-2*coverage);
                 outer[at] = (unsigned char)fmaxf(body[at], coverage*255);
             }
         }
     }
+    if (bevelDistance != NULL) { memcpy(bevelDistance, distance, (size_t)count * sizeof(float)); }
     /* Separable box blur for the offset shadow. */
     for (y = 0; y < fh; y++) {
         int sum = 0;
@@ -1047,19 +1060,57 @@ static int menu_text_row(const MenuLabel *label, int resolution, Row *out) {
     }
     for (y = 0; y < fh; y++) {
         float ramp = ((y + fy0) - (baseline - cap)) / fmaxf(1, cap - 1);
+        float outlineRamp = ((y + fy0) - (baseline - cap - border*resolution)) /
+                            fmaxf(1, cap + border*resolution*2);
         ramp = fminf(1, fmaxf(0, ramp));
+        outlineRamp = fminf(1, fmaxf(0, outlineRamp));
         for (x = 0; x < fw; x++) {
             int at = y*fw+x, sx = x-4*resolution, sy = y-3*resolution;
             float f = fill[at]/255.0f, b = body[at]/255.0f;
             float o = outer != NULL ? outer[at]/255.0f : b;
             float shadow = label->shadow && sx >= 0 && sy >= 0 ? distance[sy*fw+sx] : 0;
             float alpha = o + shadow*(1-o);
+            float outerBand = 0, innerBand = 0, bottomShade = 0, topShade = 0, rightShade = 0;
+            if (bevelDistance != NULL && b > f) {
+                float unit = fmaxf(1, label->bevelMilli*resolution/1000.0f);
+                float radial = bevelDistance[at]/unit;
+                int left = x >= resolution ? x-resolution : 0;
+                int right = x+resolution < fw ? x+resolution : fw-1;
+                outerBand = fminf(1, fmaxf(0, (radial-2.0f)/0.4f));
+                innerBand = fminf(1, fmaxf(0, (1.5f-radial)/0.5f));
+                bottomShade = fminf(1, fmaxf(0, ((y+fy0) - (baseline-2.5f*resolution))/(2.5f*resolution)));
+                topShade = fminf(1, fmaxf(0, ((baseline-cap+1.5f*resolution)-(y+fy0))/(1.5f*resolution)));
+                rightShade = fminf(1, fmaxf(0, (bevelDistance[y*fw+right] -
+                                               bevelDistance[y*fw+left])/(2*resolution)));
+            }
             for (c = 0; c < 3; c++) {
                 int shift = 16-c*8;
                 float color = ((label->top >> shift)&255)*(1-ramp) + ((label->bottom >> shift)&255)*ramp;
-                float premult = color*f + ((label->outline >> shift)&255)*(b-f);
+                float outline = ((label->outline >> shift)&255)*(1-bottomShade) +
+                                ((label->outlineBottom >> shift)&255)*bottomShade;
+                if (bevelDistance != NULL) {
+                    float lip = ((label->bevelLight >> shift)&255)*(1-topShade*0.3f) +
+                                ((label->outerColor >> shift)&255)*topShade*0.3f;
+                    outline = outline*(1-outerBand) + lip*outerBand;
+                    outline = outline*(1-innerBand*0.33f) + lip*innerBand*0.33f;
+                    outline = outline*(1-bottomShade*innerBand*innerBand*0.7f) +
+                              ((label->bevelDark >> shift)&255)*bottomShade*innerBand*innerBand*0.7f;
+                    {
+                        float core = (((label->outlineBottom >> shift)&255) +
+                                      ((label->bevelDark >> shift)&255))*0.5f;
+                        float lipRight = ((label->bevelLight >> shift)&255)*0.65f +
+                                         ((label->outerColor >> shift)&255)*0.35f;
+                        float rightColor = ((label->outlineBottom >> shift)&255)*(1-innerBand) + core*innerBand;
+                        rightColor = rightColor*(1-outerBand) + lipRight*outerBand;
+                        outline = outline*(1-rightShade) + rightColor*rightShade;
+                    }
+                } else {
+                    outline = ((label->outline >> shift)&255)*(1-outlineRamp) +
+                              ((label->outlineBottom >> shift)&255)*outlineRamp;
+                }
+                float premult = color*f + outline*(b-f);
                 if (outer != NULL) { premult += ((label->outerColor >> shift)&255)*(o-b); }
-                out->px[at*4+c] = alpha > 0 ? (unsigned char)(premult/alpha + 0.5f) : (unsigned char)(label->outline >> shift);
+                out->px[at*4+c] = alpha > 0 ? (unsigned char)(premult/alpha + 0.5f) : (unsigned char)outline;
             }
             out->px[at*4+3] = (unsigned char)(alpha*127.0f + 0.5f);
         }
@@ -1069,6 +1120,7 @@ static int menu_text_row(const MenuLabel *label, int resolution, Row *out) {
 done:
     for (i = 0; i < len; i++) { free(ink[i].bitmap); }
     free(ink); free(fill); free(body); free(outer); free(blur); free(distance);
+    free(rowDistance); free(sites); free(bounds); free(bevelDistance);
     return ok;
 }
 

@@ -46,7 +46,9 @@ void Port_NetLeave(void);
 
 enum { PAD = 18, RING = 4096, REDUNDANT = 16, MAGIC = 0x4E335442 /* "BT3N" */ };
 enum { T_HELLO = 1, T_HELLO_ACK = 2, T_INPUT = 3, T_BYE = 4, T_PING = 5, T_PONG = 6, T_CONFIG = 7, T_CONFIG_ACK = 8,
-       T_PUNCH = 9 /* nothing to read: sent so that the sender's router lets the other side's packets in (room codes) */ };
+       T_PUNCH = 9 /* nothing to read: sent so that the sender's router lets the other side's packets in (room codes) */,
+       T_CHAT = 10 /* a line of text between the players (net_chat.c): its number, its length, its bytes. Not part of
+                      the game: a copy without the chat ignores it, so NET_VERSION stays */ };
 /* The version of what goes over the line. The greeting and its answer carry it, and two copies that differ do not
    start a match (the input packets changed with version 2: times for the ping were added; a copy that read them
    the old way took them for input). 1 was releases 0.1.8 and 0.1.9, which said no version. */
@@ -59,6 +61,7 @@ static int sVersionBad; /* the other side answered with another version */
 static const uint32_t kVersion = NET_VERSION;
 #include "net_match.h"
 #include "net_relay.h"
+#include "net_chat.h"
 static int sLobbyOther;
 
 /* What the meter shows (ui.cpp): the round trip time, and per second how often the game went back, how far, and
@@ -470,6 +473,19 @@ static void send_inputs(void) {
     send_to_peer(pkt, (int)(IN_HEAD + n * PAD));
 }
 
+/* The lines of text that are due to go to the other player (net_chat.c: each is sent a few times). */
+static void chat_send(void) {
+    uint8_t pkt[16 + CHAT_TEXT];
+    uint32_t head[4] = {MAGIC, T_CHAT};
+    int len;
+
+    while (sConnected && (len = PortChat_Outgoing(now_ms(), &head[2], (char *)pkt + 16)) > 0) {
+        head[3] = (uint32_t)len;
+        memcpy(pkt, head, 16);
+        send_to_peer(pkt, 16 + len);
+    }
+}
+
 /* Takes in what has arrived. Returns 1 if anything did. */
 static int receive(void) {
     uint8_t pkt[2048];
@@ -478,6 +494,7 @@ static int receive(void) {
     int got = 0, n;
 
     queue_flush();
+    chat_send();
     while ((n = net_recv(pkt, (int)sizeof(pkt), &from)) >= 8) {
         uint32_t magic, type;
         memcpy(&magic, pkt, 4);
@@ -523,6 +540,13 @@ static int receive(void) {
             net_send(ack, sizeof(ack), &from);
         } else if (type == T_CONFIG_ACK && sMode == 1) {
             sCfgAcked = 1;
+        } else if (type == T_CHAT && sConnected && n >= 16) { /* (from the other player's address only: above) */
+            uint32_t seq, len;
+            memcpy(&seq, pkt + 8, 4);
+            memcpy(&len, pkt + 12, 4);
+            if (len <= CHAT_TEXT && len <= (uint32_t)(n - 16)) {
+                PortChat_Heard(seq, (const char *)pkt + 16, (int)len);
+            }
         } else if (type == T_BYE && sConnected) {
             uint32_t why = 0;
             if (n >= 12) {

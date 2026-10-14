@@ -162,8 +162,12 @@ The PC port's own documentation is in [docs/README_PC.md](docs/README_PC.md) and
 ## Credits and license
 
 - **[z3xox/Tenkaichi3Decomp](https://github.com/z3xox/Tenkaichi3Decomp)**: the decompilation and the PC port this is
-  built on. Dragon Rage is based on its MIT-licensed version (see [LICENSE](LICENSE)). The original repository moved to
-  GNU AGPL v3 afterwards.
+  built on, kept up to date with it.
+- **License:** like the original, the port's code is under the
+  [GNU Affero General Public License v3](LICENSE) (AGPL-3.0-only). Code up to the original's commit `06e4671` is
+  also available under [MIT](LICENSE-MIT). Anyone who passes the app on, changed or not, has to offer its source under
+  the same license; this repository is that source. The game's own code in `src/` and `include/` comes from the
+  decompilation and belongs to the game's rights holders.
 - [SDL3](https://libsdl.org) (zlib), [Dear ImGui](https://github.com/ocornut/imgui) (MIT); in the official releases,
   [hxdiscord_rpc](https://github.com/MAJigsaw77/hxdiscord_rpc) (MIT) and the Discord Social SDK (Discord's terms).
 - Dragon Ball, Budokai Tenkaichi and all related names belong to their owners. This is a fan project, not affiliated
