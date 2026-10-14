@@ -102,6 +102,7 @@ static bool sChatFocus;                        // ... and its field takes the ke
 static bool sChatKeyHeld;                      // ... and the key that opened it is still down (its letter is not typed)
 static bool sChatSoon;                         // the last Enter came within a second of the line before: not sent
 static char sChatBuf[CHAT_TEXT + 1];
+static float sChatBtn[4];                      // Android: the on-screen chat button as last drawn (x0, y0, x1, y1, 0..1)
 static void chat_close(void);
 
 /* Name strips (gamedata/stages/names.rgba and gamedata/songs/names.rgba): the names of the stages and tracks added
@@ -1468,6 +1469,10 @@ void Ui_Toggle(void) {
 // Android has no F1: the menu opens and closes with the back gesture or button (SDL hands it over as AC_BACK, the
 // loader asks SDL to keep it), with the controller's PS / Home button, or with L3 and R3 together.
 int Ui_AndroidToggleEvent(const SDL_Event *ev) {
+    if (ev->type == SDL_EVENT_KEY_DOWN && !ev->key.repeat && ev->key.scancode == SDL_SCANCODE_AC_BACK && sChat) {
+        chat_close(); // back while a chat line is typed: the line is put away (not the menu)
+        return 1;
+    }
     if (ev->type == SDL_EVENT_KEY_DOWN && !ev->key.repeat && ev->key.scancode == SDL_SCANCODE_AC_BACK && sTouchEdit) {
         sTouchEdit = false; // back in the layout editor: done, to the menu it was opened from
         sTouchSel = -1;
@@ -1517,10 +1522,10 @@ static bool chat_can_open(void) {
     return sReady && !sOpen && !sQuit && PortChat_Enabled() && Port_NetActive();
 }
 
-static void chat_open(void) {
+static void chat_open(bool byKey = true) {
     sChat = true;
     sChatFocus = true;
-    sChatKeyHeld = true;
+    sChatKeyHeld = byKey; // (opened by touch: no key's letter to leave out; the phone's keyboard opens with the field)
     sChatSoon = false;
     gPortChatTyping = 1;
     ImGui::GetIO().ClearInputKeys(); // (it saw none of the keys while the line was put away: no key is down for it)
@@ -1606,6 +1611,13 @@ int Ui_Event(const SDL_Event *ev) {
         return ev->type == SDL_EVENT_KEY_DOWN || ev->type == SDL_EVENT_KEY_UP || ev->type == SDL_EVENT_TEXT_INPUT ||
                ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev->type == SDL_EVENT_MOUSE_BUTTON_UP || ev->type == SDL_EVENT_MOUSE_WHEEL;
     }
+#ifdef __ANDROID__
+    if (ev->type == SDL_EVENT_FINGER_DOWN && chat_can_open() && sChatBtn[2] > sChatBtn[0] && ev->tfinger.x >= sChatBtn[0] &&
+        ev->tfinger.x <= sChatBtn[2] && ev->tfinger.y >= sChatBtn[1] && ev->tfinger.y <= sChatBtn[3]) {
+        chat_open(false); // the chat button (chat_button_draw): the line, and Android's keyboard with it
+        return 1;
+    }
+#endif
     if (!sOpen) {
         int touched = touch_event(ev); // (the on-screen pad)
         if (sTouchEdit) { // the layout editor: its panel gets the mouse SDL makes of a touch
@@ -2559,6 +2571,11 @@ static void chat_draw(void) {
     if (!sChat) {
         flags |= ImGuiWindowFlags_NoInputs;
     }
+#ifdef __ANDROID__
+    if (sChat) { // (the phone's keyboard covers the lower half: the line is typed at the top)
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.02f, io.DisplaySize.y * 0.03f), ImGuiCond_Always, ImVec2(0.0f, 0.0f));
+    } else
+#endif
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.02f, io.DisplaySize.y * 0.86f), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
 
     float bgAlpha = 0.85f;
@@ -2589,7 +2606,11 @@ static void chat_draw(void) {
     if (ImGui::Begin("##chat", NULL, flags)) {
         const char *names[2] = {Port_NetName(Port_NetMe()), Port_NetName(!Port_NetMe())};
         if (sChat) {
+#ifdef __ANDROID__
+            ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.28f, 1.0f), "Online Chat");
+#else
             ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.28f, 1.0f), "Online Chat (Tab)");
+#endif
             ImGui::SameLine(w - 130.0f);
             bool mute = PortChat_Muted() != 0;
             if (ImGui::Checkbox("Mute rival", &mute)) {
@@ -2680,7 +2701,11 @@ static void chat_draw(void) {
                     sChatFocus = true;
                 }
             }
+#ifdef __ANDROID__
+            ImGui::TextDisabled(sChatSoon ? "One line a second: Enter again to send" : "Enter: send   Back: close");
+#else
             ImGui::TextDisabled(sChatSoon ? "One line a second: Enter again to send" : "Enter: send   Esc / Tab: close   Ctrl+V: paste");
+#endif
         }
     }
     ImGui::End();
@@ -2855,6 +2880,27 @@ static void discord_status(void) {
     }
 }
 
+#ifdef __ANDROID__
+// The chat button of an online match on a phone (no Tab key): a round "CHAT" plate right of the R3 stick, in the
+// touch pad's colours; a tap opens the line (Ui_Event).
+static void chat_button_draw(void) {
+    ImGuiIO &io = ImGui::GetIO();
+    float W = io.DisplaySize.x, H = io.DisplaySize.y, r = H * 0.055f * (float)sTouchSize / 100.0f;
+    ImVec2 c(W * 0.84f, H * 0.27f);
+    float a = (float)sTouchAlpha / 100.0f;
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    dl->AddCircleFilled(c, r, IM_COL32(20, 22, 30, (int)(200 * a)), 32);
+    dl->AddCircle(c, r, IM_COL32(245, 140, 33, (int)(255 * a)), 32, 2.5f);
+    float fs = r * 0.62f;
+    ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, "CHAT");
+    dl->AddText(ImGui::GetFont(), fs, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), IM_COL32(255, 255, 255, (int)(255 * a)), "CHAT");
+    sChatBtn[0] = (c.x - r) / W;
+    sChatBtn[1] = (c.y - r) / H;
+    sChatBtn[2] = (c.x + r) / W;
+    sChatBtn[3] = (c.y + r) / H;
+}
+#endif
+
 static bool frame_build(void) {
     discord_status();
     if (sQuit && !PortQuit_Active() && !PortQuit_Failed()) {
@@ -2895,10 +2941,18 @@ static bool frame_build(void) {
         chat_close();
     }
     bool chat = online && (sChat || chat_recent());
+#ifdef __ANDROID__
+    bool chatBtn = online && !sChat && !sOpen && !sQuit && !sTouchEdit;
+    if (!chatBtn) {
+        sChatBtn[0] = sChatBtn[2] = 0.0f; // (no button: nothing to tap)
+    }
+#else
+    bool chatBtn = false;
+#endif
     meter_count();
     sBuilt = false;
     bool touch = sReady && touch_shown();
-    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !touch && !chat)) {
+    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !touch && !chat && !chatBtn)) {
         return false;
     }
     if (sPadHold && sCapKind != 2) { // a binding was taken: the controller works the window again once nothing is held
@@ -2954,6 +3008,11 @@ static bool frame_build(void) {
     if (chat) {
         chat_draw();
     }
+#ifdef __ANDROID__
+    if (chatBtn) {
+        chat_button_draw();
+    }
+#endif
     if (names && GsDraw_HudShown() && gUiPresentW > 0 && gUiPresentH > 0) { // (with the HUD: not over an intro)
         // Under each side's health bar (the game's 512 x 448 page: the bars end at about y 50). The left place is
         // side 0's, or this player's own side when the HUD's sides are swapped.
