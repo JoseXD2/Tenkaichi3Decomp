@@ -1,0 +1,107 @@
+# Builds the Android app (Dragon Rage) on GitHub's machines with port/android/build_apk.sh, from the repository
+# alone. No disc and no game data are involved: the player's own disc image is unpacked by the app on the phone.
+#
+#   every push to main         the APK as a downloadable artifact of the run (Actions tab > the run > Artifacts)
+#   a tag  v1.2.3              the same with that version, and a draft release with the APK attached
+#   "Run workflow" button      the same as a push
+#
+# Repository secrets (Settings > Secrets and variables > Actions), both optional:
+#   ANDROID_KEYSTORE_B64   the signing keystore in base64 (port/android/dragonrage-signing.keystore). Without it the
+#                          APK is signed with a throwaway key and does not install over a version signed with yours.
+#   HXDISCORD_ZIP_URL      a download link to hxdiscord_rpc-android-support-master.zip: with it the APK shows the
+#                          Discord status; without it the APK is built without the status.
+name: android
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore: ["docs/**", "**.md", "LICENSE"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to create the draft release on a tag
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # (the tags, for the version)
+
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-20 llvm-20 lld-20 libclang-20-dev python3-clang-20 glslang-tools cmake ninja-build
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      # SDL3 built for Android, kept between runs (only the first run builds it)
+      - uses: actions/cache@v4
+        with:
+          path: ~/bt3-tools
+          key: sdl3-android-release-3.4.12-ndk28
+
+      - name: Version
+        id: ver
+        run: |
+          # v1.2.3 -> name 1.2.3, code 123 (major*100 + minor*10 + patch, as the releases so far: 1.2.2 was 122).
+          # Not a tag: the newest tag's numbers with "-dev.<run>" (same code: installs over that release).
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then TAG=${GITHUB_REF_NAME#v}; else TAG=$(git describe --tags --abbrev=0 --match 'v[1-9]*' 2>/dev/null | sed 's/^v//'); fi
+          TAG=${TAG:-1.2.2}
+          IFS=. read -r MA MI PA <<< "${TAG%%-*}"
+          CODE=$(( ${MA:-1} * 100 + ${MI:-0} * 10 + ${PA:-0} ))
+          NAME=$TAG
+          [[ "$GITHUB_REF" == refs/tags/v* ]] || NAME="$TAG-dev.$GITHUB_RUN_NUMBER"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "version $NAME (code $CODE)"
+
+      - name: Signing key and Discord files (from the secrets, if set)
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          HXD: ${{ secrets.HXDISCORD_ZIP_URL }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          else
+            echo "::warning::no ANDROID_KEYSTORE_B64 secret: signed with a throwaway key (will not install over your own builds)"
+          fi
+          if [ -n "$HXD" ]; then
+            curl -fsSL "$HXD" -o "$RUNNER_TEMP/hxd.zip"
+            unzip -q "$RUNNER_TEMP/hxd.zip" -d "$RUNNER_TEMP/hxd"
+            DIR=$(dirname "$(find "$RUNNER_TEMP/hxd" -path '*/project/discord-rpc' -type d | head -1)")
+            echo "HXDISCORD_DIR=${DIR%/project}" >> "$GITHUB_ENV"
+          else
+            echo "::notice::no HXDISCORD_ZIP_URL secret: built without the Discord status"
+          fi
+
+      - name: Build the APK
+        run: bash port/android/build_apk.sh "${{ steps.ver.outputs.name }}" "${{ steps.ver.outputs.code }}"
+
+      - name: Forget the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.keystore"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DragonRage-${{ steps.ver.outputs.name }}
+          path: port/build/DragonRage-${{ steps.ver.outputs.name }}.apk
+          if-no-files-found: error
+
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=port/build/DragonRage-${{ steps.ver.outputs.name }}.apk
+          gh release upload "$GITHUB_REF_NAME" "$APK" --clobber 2>/dev/null ||
+            gh release create "$GITHUB_REF_NAME" --draft --title "Dragon Rage $GITHUB_REF_NAME" --generate-notes "$APK"

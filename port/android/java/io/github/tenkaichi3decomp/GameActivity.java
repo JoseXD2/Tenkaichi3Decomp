@@ -59,9 +59,10 @@ public class GameActivity extends org.libsdl.app.SDLActivity {
             if (id.length() > 0 && !id.equals("0")) {
                 System.loadLibrary("discord_partner_sdk");
                 System.loadLibrary("bt3discord");
-                com.discord.socialsdk.DiscordSocialSdkInit.setEngineActivity(this);
+                // (by name: a build without Discord's library, the GitHub workflow's without its files, still compiles)
+                Class.forName("com.discord.socialsdk.DiscordSocialSdkInit").getMethod("setEngineActivity", android.app.Activity.class).invoke(null, this);
                 android.system.Os.setenv("BT3_DISCORD_ID", id, true);
-                com.hxdiscord.rpc.sdk.DiscordApplicationMetadata.fetch(id); // the app's name and images, for the status
+                Class.forName("com.hxdiscord.rpc.sdk.DiscordApplicationMetadata").getMethod("fetch", String.class).invoke(null, id); // the app's name and images
                 Log.i("bt3", "discord: status on, application " + id);
             }
         } catch (Throwable t) {
