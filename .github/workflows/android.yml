@@ -8,8 +8,8 @@
 # Repository secrets (Settings > Secrets and variables > Actions), both optional:
 #   ANDROID_KEYSTORE_B64   the signing keystore in base64 (port/android/dragonrage-signing.keystore). Without it the
 #                          APK is signed with a throwaway key and does not install over a version signed with yours.
-#   HXDISCORD_ZIP_URL      a download link to hxdiscord_rpc-android-support-master.zip: with it the APK shows the
-#                          Discord status; without it the APK is built without the status.
+#   HXDISCORD_ZIP_URL      (the maintainer's, for the official releases) a private download link to the Discord
+#                          status's files. Without it, as in any fork, the APK is built without the Discord status.
 name: android
 
 on:

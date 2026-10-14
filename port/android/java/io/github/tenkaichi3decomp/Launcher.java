@@ -340,6 +340,11 @@ public class Launcher extends Activity {
         mSide.addView(t, p);
     }
 
+    /* this build has the Discord status (its library is in the APK) */
+    boolean hasDiscord() {
+        return new File(getApplicationInfo().nativeLibraryDir, "libbt3discord.so").exists();
+    }
+
     String version() {
         try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception e) { return ""; }
     }
@@ -645,7 +650,9 @@ public class Launcher extends Activity {
             check(Str.t("skip_logos"), null, s.on("skip_logos", false), v -> s.set("skip_logos", v));
             check(Str.t("skip_intro"), null, s.on("skip_intro", false), v -> s.set("skip_intro", v));
             check(Str.t("skip_copy"), null, s.on("skip_copyright", false), v -> s.set("skip_copyright", v));
-            check(Str.t("discord"), Str.t("discord_tip"), mLaunch.on("discord", true), v -> mLaunch.set("discord", v));
+            if (hasDiscord()) { // (only in builds made with the Discord status: port/android/build_apk.sh, HXDISCORD_DIR)
+                check(Str.t("discord"), Str.t("discord_tip"), mLaunch.on("discord", true), v -> mLaunch.set("discord", v));
+            }
             final String[] codes = {"auto", "en", "pt", "es"};
             String cur = mLaunch.str("lang", "auto");
             int sel = 0;

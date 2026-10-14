@@ -48,8 +48,8 @@ ARM64. It is **not an emulator**, so the processor has little to do and the grap
   - Bluetooth and USB controllers
 - **Mods**: each one in its own folder, switched on and off and put in order in the launcher, or imported from a
   `.zip`.
-- **Discord Rich Presence** shows the screen you are on: menus, Story mode saga, shop, Mission 100, fights with
-  their timer. It can be switched off.
+- **Discord Rich Presence** in the official releases: shows the screen you are on (menus, Story mode saga, shop,
+  Mission 100, fights with their timer). It can be switched off. Builds made by others come without it.
 - **Online** play from the PC port, with rollback: direct IP, or room codes through the matchmaking service when it
   accepts the build.
 
@@ -122,13 +122,10 @@ Android, the game, the loader and the Java side, then packs and signs the APK.
 ### On GitHub (no setup)
 
 [`.github/workflows/android.yml`](.github/workflows/android.yml) builds the APK on every push to `main` (download it
-from the run's **Artifacts**). Pushing a tag `vX.Y.Z` also makes a draft release with the APK attached. Two optional
-repository secrets:
-
-| Secret | What for |
-|---|---|
-| `ANDROID_KEYSTORE_B64` | the signing keystore in base64. Updates install over earlier versions only when both are signed with the same key. |
-| `HXDISCORD_ZIP_URL` | a download link to `hxdiscord_rpc-android-support-master.zip`. Without it the APK has no Discord status. |
+from the run's **Artifacts**). Pushing a tag `vX.Y.Z` also makes a draft release with the APK attached. In a fork it
+works as it is. One optional repository secret: `ANDROID_KEYSTORE_B64`, your signing keystore in base64. Updates
+install over earlier versions only when both are signed with the same key. The APK is built without the Discord
+status, which only the official releases have.
 
 ### On your machine (Ubuntu 24.04 or WSL)
 
@@ -136,11 +133,10 @@ repository secrets:
 sudo apt install clang-20 llvm-20 lld-20 libclang-20-dev python3-clang-20 glslang-tools cmake ninja-build openjdk-17-jdk
 # an Android SDK with an NDK, build-tools and a platform, in ANDROID_HOME
 export ANDROID_HOME=~/Android/Sdk
-KEYSTORE=path/to/your.keystore HXDISCORD_DIR=path/to/hxdiscord_rpc-android-support-master \
-    bash port/android/build_apk.sh 1.2.3 123        # -> port/build/DragonRage-1.2.3.apk
+KEYSTORE=path/to/your.keystore bash port/android/build_apk.sh 1.2.3 123   # -> port/build/DragonRage-1.2.3.apk
 ```
 
-`KEYSTORE` and `HXDISCORD_DIR` are optional. Version code 123 for 1.2.3 is major×100 + minor×10 + patch.
+`KEYSTORE` is optional. Version code 123 for 1.2.3 is major×100 + minor×10 + patch.
 
 ### How the Android port works
 
@@ -168,8 +164,8 @@ The PC port's own documentation is in [docs/README_PC.md](docs/README_PC.md) and
 - **[z3xox/Tenkaichi3Decomp](https://github.com/z3xox/Tenkaichi3Decomp)**: the decompilation and the PC port this is
   built on. Dragon Rage is based on its MIT-licensed version (see [LICENSE](LICENSE)). The original repository moved to
   GNU AGPL v3 afterwards.
-- [SDL3](https://libsdl.org) (zlib), [Dear ImGui](https://github.com/ocornut/imgui) (MIT),
-  [hxdiscord_rpc](https://github.com/MAJigsaw77/hxdiscord_rpc) (MIT), Discord Social SDK (Discord's terms).
+- [SDL3](https://libsdl.org) (zlib), [Dear ImGui](https://github.com/ocornut/imgui) (MIT); in the official releases,
+  [hxdiscord_rpc](https://github.com/MAJigsaw77/hxdiscord_rpc) (MIT) and the Discord Social SDK (Discord's terms).
 - Dragon Ball, Budokai Tenkaichi and all related names belong to their owners. This is a fan project, not affiliated
   with Bandai Namco, Spike or Toei. No game assets are in this repository.
 
@@ -192,7 +188,8 @@ baixa nada. Compartilhe só o APK, nunca a ISO.
 3. Toque em **Escolher ISO...** e aguarde alguns minutos.
 4. Toque em **Jogar**.
 
-O launcher segue o idioma do celular e tem configurações de gráficos, desempenho, controles, áudio, mods e Discord.
+O launcher segue o idioma do celular e tem configurações de gráficos, desempenho, controles, áudio e mods. O status
+no Discord vem só nas versões oficiais.
 
 - **Texturas** vão em `DragonRage/textures`.
 - **Mods** vão em `DragonRage/mods/<nome>`, ou entram pelo botão **Importar .zip**.
