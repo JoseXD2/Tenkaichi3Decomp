@@ -80,26 +80,30 @@ extern volatile u32 *Port_DmaChcr(s32 channel);
 #else
 #define DMA_PHYS(a) ((a) & 0x0FFFFFFF)
 #endif
-#define VIF1_STAT ((volatile u32 *)0x10003C00)
-#define GIF_STAT ((volatile u32 *)0x10003020)
+#ifndef PORT_HW /* (port/include/port_hwaddr.h; the PS2 build: the addresses themselves) */
+#define PORT_HW(a) (a)
+#define PORT_GS(a) (a)
+#endif
+#define VIF1_STAT ((volatile u32 *)PORT_HW(0x10003C00))
+#define GIF_STAT ((volatile u32 *)PORT_HW(0x10003020))
 #ifdef PORT /* PC build: every access first completes a transfer that was started (port/src/plat_gs.c) */
 #define D1_CHCR Port_DmaChcr(1)
 #else
-#define D1_CHCR ((volatile u32 *)0x10009000)
+#define D1_CHCR ((volatile u32 *)PORT_HW(0x10009000))
 #endif
-#define D1_QWC ((volatile u32 *)0x10009020)
-#define D1_TADR ((volatile u32 *)0x10009030)
+#define D1_QWC ((volatile u32 *)PORT_HW(0x10009020))
+#define D1_TADR ((volatile u32 *)PORT_HW(0x10009030))
 #ifdef PORT /* PC build: every access first completes a transfer that was started (port/src/plat_gs.c) */
 #define D2_CHCR Port_DmaChcr(2)
 #else
-#define D2_CHCR ((volatile u32 *)0x1000A000)
+#define D2_CHCR ((volatile u32 *)PORT_HW(0x1000A000))
 #endif
-#define D2_MADR ((volatile u32 *)0x1000A010)
-#define D2_QWC ((volatile u32 *)0x1000A020)
-#define D2_TADR ((volatile u32 *)0x1000A030)
-#define D_CTRL ((volatile u32 *)0x1000E000)
-#define D_STAT ((volatile u32 *)0x1000E010)
-#define D_PCR ((volatile u32 *)0x1000E020)
+#define D2_MADR ((volatile u32 *)PORT_HW(0x1000A010))
+#define D2_QWC ((volatile u32 *)PORT_HW(0x1000A020))
+#define D2_TADR ((volatile u32 *)PORT_HW(0x1000A030))
+#define D_CTRL ((volatile u32 *)PORT_HW(0x1000E000))
+#define D_STAT ((volatile u32 *)PORT_HW(0x1000E010))
+#define D_PCR ((volatile u32 *)PORT_HW(0x1000E020))
 
 /* One quadword of GS packet data seen as a whole, as two doublewords or as four words. */
 typedef union GsQword {

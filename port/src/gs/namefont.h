@@ -16,6 +16,8 @@ int NameFont_Has(int style, int ch);
 /* A name's picture, straight RGBA of *w x *h (64 or 32 high like the disc's rows; 512 wide, or more for a name longer
    than a row), malloc'ed. NULL: not ready, or a character has no letter (then the caller draws plain text). */
 unsigned char *NameFont_Compose(int style, const char *text, int *w, int *h);
+/* A disc stage's English name (stage id 0x00..0x22), NULL for any other id. */
+const char *NameFont_StageName(int id);
 
 #ifdef __cplusplus
 }

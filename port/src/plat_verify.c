@@ -32,6 +32,7 @@
 #include "plat_verify_tab.h"
 
 extern const char *Port_FileRoot(void); /* plat_file.c */
+extern int Port_ModFind(const char *rel, char *out, int size); /* plat_file.c: a mod's replacement of a file */
 extern void Port_UiNotice(const char *text); /* gs/ui.cpp */
 extern void PortFp_Run(int detail); /* plat_fprint.c: the gameplay fingerprint, computed on this thread */
 static int sCheck = 1; /* 0 with BT3_VERIFY=0: only the fingerprint */
@@ -155,8 +156,7 @@ static void *verify_thread(void *arg) {
             rec[0] = (uint64_t)st.st_size + 1;
             rec[1] = (uint64_t)st.st_mtime;
         }
-        snprintf(path, sizeof(path), "%s/mods/%s", root, rel);
-        if (stat(path, &st) == 0) {
+        if (Port_ModFind(rel, path, (int)sizeof(path)) && stat(path, &st) == 0) {
             rec[2] = (uint64_t)st.st_size + 1;
             rec[3] = (uint64_t)st.st_mtime;
         }
@@ -216,8 +216,7 @@ static void *verify_thread(void *arg) {
         size_t got;
 
         rel_of(n, rel, sizeof(rel));
-        snprintf(path, sizeof(path), "%s/mods/%s", root, rel);
-        if (stat(path, &st) == 0) {
+        if (Port_ModFind(rel, path, (int)sizeof(path))) {
             note(rel);
             sMods++;
             continue;

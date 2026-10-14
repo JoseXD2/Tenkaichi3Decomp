@@ -70,7 +70,13 @@ static float sWantAspect;
 static int sDisplaySetting;
 
 int gsScale = 2;
+/* the largest resolution multiplier, 8 (a phone as well: a render target is 1024 x 1024 GS pixels, 81 MB at 3x, and
+   a fight uses 7 to 16 of them; where the phone's memory runs out, gs_gpu.c target_ensure goes a step down by itself) */
+#define GS_MAX_SCALE 8
 int gsPendingScale;
+int gsTgtW = GS_W, gsTgtH = GS_H; /* (gs_draw.h; the Vulkan back end makes them compact at its start) */
+static int sTgtGrow;              /* a draw reached past the compact size: full-size targets from the next frame */
+static void tgt_check(const int *sc);
 GsTex gsWhite;
 GsDraw *gsDraws;
 uint32_t gsDrawCount;
@@ -433,6 +439,12 @@ static int pipeline_get(int ctx, int topo, int vu) {
         if (nz < 0) { nz = getenv("BT3_NZ") != NULL ? atoi(getenv("BT3_NZ")) : 1; }
         if (nz && !zwrite && ztst != 3 && vu != 4) {
             key |= 1u << 23;
+        } else if (nz == 2 && vu != 4) {
+            /* BT3_NZ=2 (the Android launcher's "Fast depth"): every draw without the depth output, so the graphics
+               chip can reject hidden pixels before shading them (early depth test). The depth of a triangle's
+               inside is then not rounded to whole steps as the GS's is: surfaces drawn twice at the same place can
+               show a little flicker where they meet. Faster where much is drawn over (3D scenes at high resolution). */
+            key |= 1u << 23;
         }
     }
     if (vu == 4) { /* asked for by depth_clut: the table pass, which only depends on blending and the write mask */
@@ -538,6 +550,7 @@ static void depth_clut(int ctx) {
     d.scissor[1] = (int)((sc >> 32) & 0x7FF) * SCALE;
     d.scissor[2] = ((int)((sc >> 16) & 0x7FF) + 1) * SCALE - d.scissor[0];
     d.scissor[3] = ((int)((sc >> 48) & 0x7FF) + 1) * SCALE - d.scissor[1];
+    tgt_check(d.scissor);
     if (last != NULL && last->native == 3 && last->tex == d.tex && last->target == d.target && last->pipeline == d.pipeline && last->src == d.src) {
         return; /* the next strip of the same pass */
     }
@@ -667,13 +680,13 @@ static int draw_state(int ctx, int topo, int sprite, int vu, GsDraw *d, float *u
                 float u0 = 0.0f, u1 = tw - 1.0f, v0 = 0.0f, v1 = th - 1.0f;
                 if (wms >= 2) { u0 = (float)((cl >> 4) & 0x3FF); u1 = (float)((cl >> 14) & 0x3FF); }
                 if (wmt >= 2) { v0 = (float)((cl >> 24) & 0x3FF); v1 = (float)((cl >> 34) & 0x3FF); }
-                d->rect[0] = (u0 + 0.5f) / (float)GS_W;
-                d->rect[1] = (v0 + 0.5f) / (float)GS_H;
-                d->rect[2] = (u1 + 0.5f) / (float)GS_W;
-                d->rect[3] = (v1 + 0.5f) / (float)GS_H;
+                d->rect[0] = (u0 + 0.5f) / (float)gsTgtW;
+                d->rect[1] = (v0 + 0.5f) / (float)gsTgtH;
+                d->rect[2] = (u1 + 0.5f) / (float)gsTgtW;
+                d->rect[3] = (v1 + 0.5f) / (float)gsTgtH;
             }
-            *us = tw / (float)GS_W;
-            *vs = th / (float)GS_H;
+            *us = tw / (float)gsTgtW;
+            *vs = th / (float)gsTgtH;
         } else {
             d->tex = texture_get(ctx);
         }
@@ -704,6 +717,7 @@ static int draw_state(int ctx, int topo, int sprite, int vu, GsDraw *d, float *u
     d->scissor[1] = (int)((sc >> 32) & 0x7FF) * SCALE;
     d->scissor[2] = ((int)((sc >> 16) & 0x7FF) + 1) * SCALE - d->scissor[0];
     d->scissor[3] = ((int)((sc >> 48) & 0x7FF) + 1) * SCALE - d->scissor[1];
+    tgt_check(d->scissor);
     return 1;
 }
 
@@ -820,7 +834,7 @@ static void date_snapshot(const GsDraw *d) {
 int GsDraw_DateRegion(uint32_t k, int *rx, int *ry, int *rw, int *rh) {
     const GsDraw *c = &gsDraws[k];
     float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
-    int W = GS_W * SCALE, H = GS_H * SCALE, ix0, iy0, ix1, iy1, whole = 0, any = 0;
+    int W = gsTgtW * SCALE, H = gsTgtH * SCALE, ix0, iy0, ix1, iy1, whole = 0, any = 0;
     uint32_t i, j;
 
     for (i = k + 1; i < gsDrawCount; i++) {
@@ -1390,12 +1404,28 @@ void GsGpu_Native(int effect) {
     d.scissor[1] = (int)((sc >> 32) & 0x7FF) * SCALE;
     d.scissor[2] = ((int)((sc >> 16) & 0x7FF) + 1) * SCALE - d.scissor[0];
     d.scissor[3] = ((int)((sc >> 48) & 0x7FF) + 1) * SCALE - d.scissor[1];
+    tgt_check(d.scissor);
     gsDraws[gsDrawCount++] = d;
+}
+
+/* A draw's scissor (at SCALE) past the compact targets' size: they are made full size from the next frame on. */
+static void tgt_check(const int *sc) {
+    if ((gsTgtW < GS_W || gsTgtH < GS_H) && (sc[0] + sc[2] > gsTgtW * SCALE || sc[1] + sc[3] > gsTgtH * SCALE)) {
+        sTgtGrow = 1;
+    }
 }
 
 /* A new resolution multiplier: every render target is dropped and made again at the new size when the game next
    draws to it. Buffers that carry something over from the previous frame start empty for one frame. */
 static void scale_apply(void) {
+    if (sTgtGrow) { /* a draw reached past the compact targets (tgt_check): full size from now on */
+        sTgtGrow = 0;
+        gsTgtW = GS_W;
+        gsTgtH = GS_H;
+        sBackend->scaleChanged();
+        gsTargetCount = 0;
+        fprintf(stderr, "bt3: render targets made full size (a draw reached past %dx%d)\n", TGT_COMPACT_W, TGT_COMPACT_H);
+    }
     if (gsPendingScale == 0 || gsPendingScale == gsScale) {
         gsPendingScale = 0;
         return;
@@ -1421,6 +1451,36 @@ static void menu_labels_apply(void) {
 /* Created (with SDL's video subsystem) before the device / the GL context: everything the user can choose
    about it (BT3_WINDOW, BT3_DISPLAY, BT3_FULLSCREEN, the saved settings, the aspect ratio) is decided here,
    so both back ends show the same window. `opengl` requests a window a GL context can be made current on. */
+#ifdef BT3_TGT_STATS
+static void tgt_stats(void) {
+    uint32_t n;
+    {
+        static int sx[512], sy[512], vx[512], vy[512], frames;
+        for (n = 0; n < gsDrawCount; n++) {
+            const GsDraw *d = &gsDraws[n];
+            uint32_t f, k;
+            if (d->target < 0 || d->native) continue;
+            f = gsTargets[d->target].fbp & 511;
+            if ((d->scissor[0] + d->scissor[2]) / SCALE > sx[f]) sx[f] = (d->scissor[0] + d->scissor[2]) / SCALE;
+            if ((d->scissor[1] + d->scissor[3]) / SCALE > sy[f]) sy[f] = (d->scissor[1] + d->scissor[3]) / SCALE;
+            if (!d->vu) for (k = d->first; k < d->first + d->count; k++) {
+                int x = (int)gsVerts[k].x, y = (int)gsVerts[k].y;
+                int cx = x < (d->scissor[0] + d->scissor[2]) / SCALE ? x : (d->scissor[0] + d->scissor[2]) / SCALE;
+                int cy = y < (d->scissor[1] + d->scissor[3]) / SCALE ? y : (d->scissor[1] + d->scissor[3]) / SCALE;
+                if (cx > vx[f]) vx[f] = cx;
+                if (cy > vy[f]) vy[f] = cy;
+            }
+        }
+        if (++frames % 600 == 0) {
+            int k;
+            for (k = 0; k < 512; k++) if (sx[k]) fprintf(stderr, "tgt fbp=%03x scissor<=%dx%d verts<=%dx%d\n", k, sx[k], sy[k], vx[k], vy[k]);
+        }
+    }
+}
+#else
+#define tgt_stats() ((void)0)
+#endif
+
 SDL_Window *GsDraw_WindowCreate(int opengl) {
     extern int Port_AspectMilli(void);
     float want = (float)Port_AspectMilli() / 1000.0f;
@@ -1450,6 +1510,10 @@ SDL_Window *GsDraw_WindowCreate(int opengl) {
     sDisplaySetting = Port_Setting("display", 0);
     pick = getenv("BT3_DISPLAY") != NULL ? atoi(getenv("BT3_DISPLAY")) : sDisplaySetting;
     sFullscreen = (getenv("BT3_FULLSCREEN") != NULL ? atoi(getenv("BT3_FULLSCREEN")) : Port_Setting("fullscreen", 0)) != 0;
+#ifdef __ANDROID__
+    sFullscreen = 0; /* a phone: SDL's own "full screen" is not used (with it the window's size and the touch controls'
+                        places disagreed); GameActivity.java hides the system's bars itself, the window follows */
+#endif
     sWantAspect = want;
     SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "Tenkaichi3Decomp");
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, w);
@@ -1488,6 +1552,9 @@ void GsDraw_WindowShape(void) {
 }
 
 void GsDraw_FullscreenSet(int on) {
+#ifdef __ANDROID__
+    on = 0; /* (see GsDraw_WindowCreate) */
+#endif
     if (sWindow == NULL) {
         return;
     }
@@ -1538,7 +1605,7 @@ void GsGpu_SetSettings(const PortVideo *v) {
     PortVideo now;
     GsGpu_GetSettings(&now);
     if (v->scale != now.scale) {
-        gsPendingScale = v->scale < 1 ? 1 : v->scale > 8 ? 8 : v->scale; /* applied between two frames */
+        gsPendingScale = v->scale < 1 ? 1 : v->scale > GS_MAX_SCALE ? GS_MAX_SCALE : v->scale; /* applied between two frames */
     }
     if (v->aspectMilli != now.aspectMilli) {
         Port_SetAspectMilli(v->aspectMilli);
@@ -1595,7 +1662,7 @@ int GsGpu_Init(void) {
     GsBackend *sb;
 
     gsScale = getenv("BT3_SCALE") != NULL ? atoi(getenv("BT3_SCALE")) : Port_Setting("scale", 2);
-    gsScale = gsScale < 1 ? 1 : gsScale > 8 ? 8 : gsScale;
+    gsScale = gsScale < 1 ? 1 : gsScale > GS_MAX_SCALE ? GS_MAX_SCALE : gsScale;
     gsPendingScale = 0;
     gsVerts = malloc(MAX_VERTS * sizeof(Vtx));
     gsVuVerts = malloc(MAX_VU_VERTS * 48);
@@ -1607,6 +1674,9 @@ int GsGpu_Init(void) {
     if (api == NULL || strcmp(api, "auto") == 0) {
         /* the settings window's choice (Renderer; Vulkan unless OpenGL was picked there) */
         sb = Port_Setting("gpu_api", 0) == 1 ? &sGlBackend : &sVulkanBackend;
+#ifdef __ANDROID__
+        sb = &sVulkanBackend; /* a phone has OpenGL ES, not the desktop GL 3.3 the other back end needs */
+#endif
         api = NULL;
     } else if (strcmp(api, "vk") == 0 || strcmp(api, "vulkan") == 0) {
         sb = &sVulkanBackend;
@@ -1628,9 +1698,21 @@ int GsGpu_Init(void) {
         fprintf(stderr, "bt3: the %s renderer could not start; trying %s\n", sb == &sVulkanBackend ? "Vulkan" : "OpenGL",
                 other == &sVulkanBackend ? "Vulkan" : "OpenGL");
         sb = other;
+        if (sWindow != NULL) {
+            /* the window the failed renderer made: the other makes its own (a phone can have only one window;
+               left there, the second renderer got "Android only supports one window" and the screen stayed black) */
+            SDL_DestroyWindow(sWindow);
+            sWindow = NULL;
+        }
         sBackend = sb;
         if (!sb->init()) {
             sBackend = NULL;
+#ifdef __ANDROID__
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Dragon Rage",
+                                     "The game could not start this phone's graphics (Vulkan).\n\n"
+                                     "Try the launcher's Settings > Performance > Compatibility mode, and update the phone's "
+                                     "system. A phone whose chip has no Vulkan cannot run the game.", NULL);
+#endif
             return 0;
         }
     }

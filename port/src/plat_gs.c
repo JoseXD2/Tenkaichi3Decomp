@@ -8,9 +8,10 @@
  * Headless build: the data is dropped. A renderer takes over in Port_DmaTransfer.
  */
 #include <stdint.h>
+#include "port_hwaddr.h"
 #include "port_addr.h"
 
-#define REG(a) ((volatile uint32_t *)Port_Ptr(a))
+#define REG(a) ((volatile uint32_t *)Port_Ptr(PORT_HW(a)))
 
 extern void Port_GsVif1Chain(uint32_t tadr, int tte);
 extern void Port_GsGifChannel(uint32_t addr, uint32_t qwc, int chain);

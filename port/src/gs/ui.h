@@ -77,9 +77,12 @@ void GsGpu_Vsync(int on); /* gs_gpu.c */
 void GsGl_Vsync(int on);  /* gs_gl.c */
 int Port_Setting(const char *name, int def); /* plat_settings.c */
 void Ui_Toggle(void);
+int Ui_AndroidToggleEvent(const SDL_Event *ev); /* Android: opens / closes the menu on back, PS / Home, L3 + R3 */
 int Ui_QuitAsk(void); /* Esc outside the window: asks before the game closes. 0 = there is no window to ask in */
 void Ui_Draw(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target);      /* builds and draws this frame's window */
 void Ui_DrawAgain(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target); /* the same picture onto another texture */
+/* the on-screen pad (phones): player 1's buttons (include/sys/pad.h bits, 1 = pressed) and sticks; 0 = not in use */
+int Ui_TouchPad(unsigned *btn, unsigned char *lx, unsigned char *ly, unsigned char *rx, unsigned char *ry);
 
 /* Stage-name overlay: the names of stages added from outside the disc are drawn by the port (its font has no
    stylized glyphs), over the picture, in the game's own coordinates. gs_gpu.c fills the present rectangle (the

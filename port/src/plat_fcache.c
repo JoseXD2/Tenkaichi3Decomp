@@ -9,12 +9,14 @@
  * is closed when another is needed.
  * (Its variables must NOT be part of the saved state: port/tools/make_state.py leaves this file out.)
  */
+#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 extern void Port_StateTouch(void *p, unsigned long n); /* gs/state.c */
 
 extern const char *Port_FileRoot(void); /* plat_file.c: BT3_DATA or "gamedata" */
+extern int Port_ModFind(const char *rel, char *out, int size); /* plat_file.c: a mod's replacement of a file */
 
 enum { SLOTS = 32 };
 static struct { char rel[128]; FILE *fp; long size; unsigned long used; } sSlot[SLOTS];
@@ -41,8 +43,7 @@ FILE *Port_FileOpenHost(const char *rel, char *path, size_t n) {
             fp = fopen(path, "rb");
         }
     }
-    if (fp == NULL) { /* a file under mods/ wins over the original */
-        snprintf(path, n, "%s/mods/%s", Port_FileRoot(), rel);
+    if (fp == NULL && Port_ModFind(rel, path, (int)n)) { /* a file of a mod (plat_file.c) wins over the original */
         fp = fopen(path, "rb");
     }
     if (fp == NULL) {
@@ -102,6 +103,7 @@ long Port_FileSize(const char *rel) {
     long size;
     int i;
     while (__sync_lock_test_and_set(&sLock, 1)) {
+        sched_yield(); /* (a holder of another priority must get to run: Android's audio threads are real-time) */
     }
     i = slot_of(rel);
     size = i < 0 ? -1 : sSlot[i].size;
@@ -114,6 +116,7 @@ size_t Port_FileReadAt(const char *rel, long offset, void *buf, size_t bytes) {
     size_t got = 0;
     int i;
     while (__sync_lock_test_and_set(&sLock, 1)) {
+        sched_yield(); /* (a holder of another priority must get to run: Android's audio threads are real-time) */
     }
     i = slot_of(rel);
     if (i >= 0 && fseek(sSlot[i].fp, offset, SEEK_SET) == 0) {

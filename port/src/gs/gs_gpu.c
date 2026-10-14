@@ -30,6 +30,9 @@ extern int Port_AspectMilli(void);
 static SDL_Window *sWindow; /* the shared window (GsDraw_WindowCreate) */
 static SDL_GPUDevice *sDev;
 static SDL_GPUShader *sVs, *sFs, *sFsNz; /* (Nz: gs.frag without its depth output, key bit 23) */
+static int sNoDepthClamp; /* the device has no depth clamping: vertex shaders of the NO_DEPTH_CLAMP kind */
+static int sSafe;        /* BT3_GPU_SAFE: the plainest device and present mode (vk_init) */
+static unsigned sStat[4]; /* this second: GS passes, effect passes, alpha copies, draws (BT3_GS_VERBOSE) */
 static SDL_GPUBuffer *sVbuf;
 static SDL_GPUTransferBuffer *sVxfer;
 static SDL_GPUSampler *sSamplers[16]; /* bit 0 filtered, bit 1 / 2 clamped in u / v, bit 3 with the smaller copies (mip levels) */
@@ -37,6 +40,7 @@ static SDL_GPUTexture *sWhite;
 static SDL_GPUGraphicsPipeline *sOutlinePipe, *sKeyPipe;
 static SDL_GPUTexture *sFbTex[2]; /* pictures uploaded into the two display buffers (movies) */
 static SDL_GPUShader *sFxVs, *sDclutFs;
+static SDL_GPUGraphicsPipeline *sOpaquePipe; /* alpha 1 over the window's picture (opaque.frag) */
 static SDL_GPUTexture *sDateCopy; /* the alpha bytes as they were before a run of draws that test them (TEST.DATE) */
 static SDL_GPUTexture *sAuxCopy;  /* the alpha bytes, copied so that a pass can read them while it writes them */
 /* The attachments of gsTargets[i]: what the shared table holds is GS state only, this is the GPU side of it. */
@@ -70,6 +74,11 @@ static uint64_t gpu_now(void) { return SDL_GetTicksNS(); }
 #define SHADER_ENTRY "main"
 #define SHADER_CODE(name) name##Spv, sizeof(name##Spv)
 #endif
+#ifdef __APPLE__
+#define VERT_CODE(name) SHADER_CODE(name)
+#else /* (a GPU without depth clamping: the vertex shaders that clamp the depth themselves, shaders/*.vert) */
+#define VERT_CODE(name) (sNoDepthClamp ? name##NcSpv : name##Spv), (sNoDepthClamp ? sizeof(name##NcSpv) : sizeof(name##Spv))
+#endif
 static SDL_GPUShader *shader(const unsigned char *code, size_t size, SDL_GPUShaderStage stage, int samplers, int ubos) {
     SDL_GPUShaderCreateInfo ci;
     SDL_zero(ci);
@@ -92,8 +101,8 @@ static void copies_create(void) {
     ci.type = SDL_GPU_TEXTURETYPE_2D;
     ci.format = SDL_GPU_TEXTUREFORMAT_R8_UNORM;
     ci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
-    ci.width = GS_W * SCALE;
-    ci.height = GS_H * SCALE;
+    ci.width = gsTgtW * SCALE;
+    ci.height = gsTgtH * SCALE;
     ci.layer_count_or_depth = 1;
     ci.num_levels = 1;
     sAuxCopy = SDL_CreateGPUTexture(sDev, &ci);
@@ -108,8 +117,8 @@ static void target_ensure(int i) {
     ci.type = SDL_GPU_TEXTURETYPE_2D;
     ci.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     ci.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-    ci.width = GS_W * SCALE;
-    ci.height = GS_H * SCALE;
+    ci.width = gsTgtW * SCALE;
+    ci.height = gsTgtH * SCALE;
     ci.layer_count_or_depth = 1;
     ci.num_levels = 1;
     sTgCol[i] = SDL_CreateGPUTexture(sDev, &ci);
@@ -118,6 +127,11 @@ static void target_ensure(int i) {
     ci.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
     ci.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER; /* the depth effects read it */
     sTgDep[i] = SDL_CreateGPUTexture(sDev, &ci);
+    if ((sTgCol[i] == NULL || sTgAux[i] == NULL || sTgDep[i] == NULL) && SCALE > 1) {
+        /* out of video memory: the next frame goes one resolution step down instead of drawing without targets */
+        fprintf(stderr, "bt3: render target %d at %dx failed (%s): going down to %dx\n", i, SCALE, SDL_GetError(), SCALE - 1);
+        gsPendingScale = SCALE - 1;
+    }
 }
 
 static void target_drop(int i) {
@@ -272,6 +286,7 @@ static int pipeline_create(uint32_t key, int remember) {
     ci.vertex_input_state.num_vertex_attributes = 3;
     ci.primitive_type = topo == 0 ? SDL_GPU_PRIMITIVETYPE_TRIANGLELIST : topo == 1 ? SDL_GPU_PRIMITIVETYPE_LINELIST : SDL_GPU_PRIMITIVETYPE_POINTLIST;
     ci.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    ci.rasterizer_state.enable_depth_clip = sNoDepthClamp != 0; /* (no depth clamping: see the device's creation) */
     ci.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     ci.depth_stencil_state.enable_depth_test = true;
     ci.depth_stencil_state.enable_depth_write = zwrite;
@@ -366,6 +381,9 @@ static void vsync_apply(int on) {
         return;
     }
     SDL_WaitForGPUIdle(sDev); /* (nothing of an earlier frame still on its way to the old swapchain) */
+    if (sSafe) {
+        on = 1; /* (VSYNC: the one present mode every driver has) */
+    }
     if (!on && SDL_WindowSupportsGPUPresentMode(sDev, sWindow, SDL_GPU_PRESENTMODE_MAILBOX)) {
         mode = SDL_GPU_PRESENTMODE_MAILBOX;
     } else if (!on && SDL_WindowSupportsGPUPresentMode(sDev, sWindow, SDL_GPU_PRESENTMODE_IMMEDIATE)) {
@@ -387,7 +405,31 @@ static int vk_init(void) {
         fprintf(stderr, "bt3: SDL_Init: %s\n", SDL_GetError());
         return 0;
     }
-    sDev = SDL_CreateGPUDevice(SHADER_FORMAT, getenv("BT3_GPU_DEBUG") != NULL, NULL);
+    /* BT3_GPU_SAFE=1 (the Android launcher's "Compatibility mode", for graphics chips whose drivers misbehave):
+       straight to the device without the optional features, and the picture shown at the display's refresh */
+    sSafe = getenv("BT3_GPU_SAFE") != NULL && atoi(getenv("BT3_GPU_SAFE")) != 0;
+    sDev = sSafe ? NULL : SDL_CreateGPUDevice(SHADER_FORMAT, getenv("BT3_GPU_DEBUG") != NULL, NULL);
+    if (sDev == NULL) {
+        /* GPUs without some of what SDL asks for by default (phones: depth clamping, clip distances): again without
+           those. The renderer uses none of them but depth clamping, which its vertex shaders then do themselves
+           (the NO_DEPTH_CLAMP variants, shaders/*.vert) with depth clipping off in the pipelines. */
+        SDL_PropertiesID props = SDL_CreateProperties();
+        fprintf(stderr, "bt3: GPU device with the default features: %s; trying without the optional ones\n", SDL_GetError());
+        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, SHADER_FORMAT == SDL_GPU_SHADERFORMAT_SPIRV);
+        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, SHADER_FORMAT == SDL_GPU_SHADERFORMAT_MSL);
+        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, getenv("BT3_GPU_DEBUG") != NULL);
+        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_DEPTH_CLAMPING_BOOLEAN, false);
+        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_CLIP_DISTANCE_BOOLEAN, false);
+        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_INDIRECT_DRAW_FIRST_INSTANCE_BOOLEAN, false);
+        SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_ANISOTROPY_BOOLEAN, false);
+        sDev = SDL_CreateGPUDeviceWithProperties(props);
+        SDL_DestroyProperties(props);
+        sNoDepthClamp = sDev != NULL;
+    }
+    if (sDev == NULL) {
+        fprintf(stderr, "bt3: no GPU device: %s\n", SDL_GetError());
+        return 0;
+    }
     sWindow = GsDraw_WindowCreate(0); /* the shared window: shape, display and full screen decided there */    if (sWindow == NULL || !SDL_ClaimWindowForGPUDevice(sDev, sWindow)) {
         fprintf(stderr, "bt3: no GPU window: %s\n", SDL_GetError());
         return 0;
@@ -395,7 +437,7 @@ static int vk_init(void) {
     /* The game paces itself at 30 frames per second; waiting for the display's own refresh on top of that
        (VSYNC) costs up to a refresh period per frame. Prefer MAILBOX (no tearing, no wait), then IMMEDIATE. */
     vsync_apply(Port_Setting("vsync", 0)); /* (the setting "V-sync" asks for the wait all the same) */
-    sVs = shader(SHADER_CODE(kGsVert), SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
+    sVs = shader(VERT_CODE(kGsVert), SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     sFs = shader(SHADER_CODE(kGsFrag), SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
     sFsNz = shader(SHADER_CODE(kGsnzFrag), SDL_GPU_SHADERSTAGE_FRAGMENT, 2, 1);
     if (sVs == NULL || sFs == NULL || sFsNz == NULL) {
@@ -425,9 +467,9 @@ static int vk_init(void) {
         si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         sSamplers[i] = SDL_CreateGPUSampler(sDev, &si);
     }
-    sVu0Vs = shader(SHADER_CODE(kVu0Vert), SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
-    sVu4Vs = shader(SHADER_CODE(kVu4Vert), SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
-    sVu6Vs = shader(SHADER_CODE(kVu6Vert), SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
+    sVu0Vs = shader(VERT_CODE(kVu0Vert), SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
+    sVu4Vs = shader(VERT_CODE(kVu4Vert), SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
+    sVu6Vs = shader(VERT_CODE(kVu6Vert), SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
     bi.size = MAX_VU_VERTS * 48;
     sVuVbuf = SDL_CreateGPUBuffer(sDev, &bi);
     ti.size = MAX_VU_VERTS * 48;
@@ -476,6 +518,7 @@ static int vk_init(void) {
         ci.fragment_shader = fs;
         ci.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
         ci.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    ci.rasterizer_state.enable_depth_clip = sNoDepthClamp != 0; /* (no depth clamping: see the device's creation) */
         ci.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
         ci.target_info.color_target_descriptions = &cd;
         ci.target_info.num_color_targets = 1;
@@ -497,11 +540,47 @@ static int vk_init(void) {
         }
     }
     sDclutFs = shader(SHADER_CODE(kDclutFrag), SDL_GPU_SHADERSTAGE_FRAGMENT, 3, 1);
+#ifdef __ANDROID__
+    {   /* the window's picture made opaque after the copy (see opaque.frag): only where the system composites by alpha */
+        SDL_GPUShader *fs = shader(SHADER_CODE(kOpaqueFrag), SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0);
+        SDL_GPUColorTargetDescription cd;
+        SDL_GPUGraphicsPipelineCreateInfo ci;
+        SDL_zero(cd);
+        SDL_zero(ci);
+        cd.format = SDL_GetGPUSwapchainTextureFormat(sDev, sWindow);
+        cd.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_A;
+        cd.blend_state.enable_color_write_mask = true;
+        ci.vertex_shader = sFxVs;
+        ci.fragment_shader = fs;
+        ci.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+        ci.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+        ci.rasterizer_state.enable_depth_clip = sNoDepthClamp != 0;
+        ci.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+        ci.target_info.color_target_descriptions = &cd;
+        ci.target_info.num_color_targets = 1;
+        sOpaquePipe = fs ? SDL_CreateGPUGraphicsPipeline(sDev, &ci) : NULL;
+        if (sOpaquePipe == NULL) {
+            fprintf(stderr, "bt3: opaque pipeline: %s\n", SDL_GetError());
+        }
+    }
+#endif
+    if (getenv("BT3_TGT_FULL") == NULL || atoi(getenv("BT3_TGT_FULL")) == 0) { /* compact render targets (gs_draw.h) */
+        gsTgtW = TGT_COMPACT_W;
+        gsTgtH = TGT_COMPACT_H;
+    }
     copies_create();
     if (!Ui_Init(sWindow, sDev, NULL)) {
         fprintf(stderr, "bt3: the settings window could not be set up\n");
     }
     fprintf(stderr, "bt3: GPU renderer: %s\n", SDL_GetGPUDeviceDriver(sDev));
+    {   /* which chip and driver (a report from a phone says at once whether it is a Mali, an Adreno, a PowerVR...) */
+        SDL_PropertiesID p = SDL_GetGPUDeviceProperties(sDev);
+        const char *name = SDL_GetStringProperty(p, SDL_PROP_GPU_DEVICE_NAME_STRING, "?");
+        const char *drv = SDL_GetStringProperty(p, SDL_PROP_GPU_DEVICE_DRIVER_NAME_STRING, "?");
+        const char *ver = SDL_GetStringProperty(p, SDL_PROP_GPU_DEVICE_DRIVER_VERSION_STRING, "?");
+        fprintf(stderr, "bt3: GPU: %s, driver %s %s%s%s\n", name, drv, ver, sNoDepthClamp ? ", without depth clamping" : "",
+                sSafe ? ", compatibility mode" : "");
+    }
     fprintf(stderr, "bt3: %d logical processors, %d MB of memory\n", SDL_GetNumLogicalCPUCores(), SDL_GetSystemRAM());
     pipelines_preload();
     return 1;
@@ -540,6 +619,11 @@ static void vk_frame_end(void) {
             Ui_Toggle();
             continue;
         }
+#ifdef __ANDROID__
+        if (Ui_AndroidToggleEvent(&ev)) { /* Android: the back gesture, the controller's PS / Home button, or L3 + R3 */
+            continue;
+        }
+#endif
         if (Ui_Event(&ev)) { /* the settings window is open and used it (Esc closes it) */
             continue;
         }
@@ -697,12 +781,12 @@ static void vk_frame_end(void) {
         }
         SDL_zero(ti);
         ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        ti.size = GS_W * GS_H * 4;
+        ti.size = (Uint32)(gsTgtW * gsTgtH * 4); /* (only what a target holds: 640 x 512 of the 1024 x 1024) */
         tb = SDL_CreateGPUTransferBuffer(sDev, &ti);
         px = SDL_MapGPUTransferBuffer(sDev, tb, false);
-        for (y = 0; y < GS_H; y++) {
-            for (x = 0; x < GS_W; x++) {
-                px[y * GS_W + x] = Gs_VramRead(fbp * 32, 8, 0, x, y) | 0xFF000000u;
+        for (y = 0; y < (uint32_t)gsTgtH; y++) {
+            for (x = 0; x < (uint32_t)gsTgtW; x++) {
+                px[y * (uint32_t)gsTgtW + x] = Gs_VramRead(fbp * 32, 8, 0, x, y) | 0xFF000000u;
             }
         }
         SDL_UnmapGPUTransferBuffer(sDev, tb);
@@ -710,8 +794,8 @@ static void vk_frame_end(void) {
         src.transfer_buffer = tb;
         SDL_zero(dst);
         dst.texture = sFbTex[i];
-        dst.w = GS_W;
-        dst.h = GS_H;
+        dst.w = (Uint32)gsTgtW;
+        dst.h = (Uint32)gsTgtH;
         dst.d = 1;
         SDL_UploadToGPUTexture(copy, &src, &dst, false);
         SDL_ReleaseGPUTransferBuffer(sDev, tb);
@@ -737,11 +821,11 @@ static void vk_frame_end(void) {
             cur = -1;
             SDL_zero(bl);
             bl.source.texture = sFbTex[d->native - 100];
-            bl.source.w = GS_W;
-            bl.source.h = GS_H;
+            bl.source.w = (Uint32)gsTgtW;
+            bl.source.h = (Uint32)gsTgtH;
             bl.destination.texture = sTgCol[d->target];
-            bl.destination.w = GS_W * SCALE;
-            bl.destination.h = GS_H * SCALE;
+            bl.destination.w = (Uint32)(gsTgtW * SCALE);
+            bl.destination.h = (Uint32)(gsTgtH * SCALE);
             bl.load_op = SDL_GPU_LOADOP_DONT_CARE;
             bl.filter = SDL_GPU_FILTER_LINEAR;
             if (sFbTex[d->native - 100] != NULL) {
@@ -766,6 +850,7 @@ static void vk_frame_end(void) {
                 continue;
             }
             cp = SDL_BeginGPUCopyPass(cmd);
+            sStat[2]++;
             SDL_zero(from);
             SDL_zero(to);
             from.texture = sTgAux[d->target];
@@ -788,11 +873,12 @@ static void vk_frame_end(void) {
                 continue;
             }
             cp = SDL_BeginGPUCopyPass(cmd);
+            sStat[2]++;
             SDL_zero(from);
             SDL_zero(to);
             from.texture = sTgAux[d->target];
             to.texture = sAuxCopy;
-            SDL_CopyGPUTextureToTexture(cp, &from, &to, GS_W * SCALE, GS_H * SCALE, 1, false);
+            SDL_CopyGPUTextureToTexture(cp, &from, &to, (Uint32)(gsTgtW * SCALE), (Uint32)(gsTgtH * SCALE), 1, false);
             SDL_EndGPUCopyPass(cp);
             continue;
         }
@@ -817,6 +903,7 @@ static void vk_frame_end(void) {
             cts[1] = cts[0];
             cts[1].texture = sTgAux[d->target];
             pass = SDL_BeginGPURenderPass(cmd, cts, 2, NULL);
+            sStat[1]++;
             SDL_BindGPUGraphicsPipeline(pass, sPipes[d->pipeline].p);
             bc.r = bc.g = bc.b = bc.a = d->blendc;
             SDL_SetGPUBlendConstants(pass, bc);
@@ -852,12 +939,13 @@ static void vk_frame_end(void) {
             ft.load_op = SDL_GPU_LOADOP_LOAD;
             ft.store_op = SDL_GPU_STOREOP_STORE;
             pass = SDL_BeginGPURenderPass(cmd, &ft, 1, NULL);
+            sStat[1]++;
             SDL_BindGPUGraphicsPipeline(pass, d->native == 2 ? sKeyPipe : sOutlinePipe);
             fs.texture = sAuxCopy; /* the ids as copied by the game, not the live alpha (later passes overwrite it) */
             fs.sampler = sSamplers[6]; /* nearest, clamped */
             SDL_BindGPUFragmentSamplers(pass, 0, &fs, 1);
-            params[0] = 1.0f / (float)GS_W;
-            params[1] = 1.0f / (float)GS_H;
+            params[0] = 1.0f / (float)gsTgtW; /* (one GS pixel in the uv of the target's texture) */
+            params[1] = 1.0f / (float)gsTgtH;
             params[2] = 100.0f / 255.0f; /* the dark rectangle's 0x64 */
             params[3] = getenv("BT3_FX_DEBUG") != NULL ? 1.0f : 0.0f;
             SDL_PushGPUFragmentUniformData(cmd, 0, params, sizeof(params));
@@ -890,6 +978,13 @@ static void vk_frame_end(void) {
             gsTargets[d->target].cleared = 1;
             cts[0] = ct;
             pass = SDL_BeginGPURenderPass(cmd, cts, 2, &dt);
+            sStat[0]++;
+            if (gsTgtW != GS_W || gsTgtH != GS_H) {
+                /* compact targets (gs_draw.h): the vertex programs map 0..1024 GS pixels to the viewport, so it stays
+                   the whole GS space; what falls past the textures is not drawn (nor was it ever: the game's scissor) */
+                SDL_GPUViewport vp = {0.0f, 0.0f, (float)(GS_W * SCALE), (float)(GS_H * SCALE), 0.0f, 1.0f};
+                SDL_SetGPUViewport(pass, &vp);
+            }
             cur = d->target;
             bound = -1;
             lastPipe = lastUni = lastSampler = -1; /* a new pass: everything is set again */
@@ -997,6 +1092,20 @@ static void vk_frame_end(void) {
         bl.load_op = SDL_GPU_LOADOP_CLEAR;
         bl.filter = SDL_GPU_FILTER_LINEAR;
         SDL_BlitGPUTexture(cmd, &bl);
+        if (sOpaquePipe != NULL) {
+            SDL_GPUColorTargetInfo ct;
+            SDL_GPURenderPass *op;
+            SDL_zero(ct);
+            ct.texture = swap;
+            ct.load_op = SDL_GPU_LOADOP_LOAD;
+            ct.store_op = SDL_GPU_STOREOP_STORE;
+            op = SDL_BeginGPURenderPass(cmd, &ct, 1, NULL);
+            if (op != NULL) {
+                SDL_BindGPUGraphicsPipeline(op, sOpaquePipe);
+                SDL_DrawGPUPrimitives(op, 3, 1, 0, 0);
+                SDL_EndGPURenderPass(op);
+            }
+        }
         gUiPresentX = (int)bl.destination.x; /* the stage-name overlay maps game pixels through this rectangle */
         gUiPresentY = (int)bl.destination.y;
         gUiPresentW = (int)bl.destination.w;
@@ -1090,14 +1199,18 @@ static void vk_frame_end(void) {
         sum[2] += sEndT[3] - sEndT[2];
         sum[3] += sEndT[4] - sEndT[3];
         sum[4] += now - sEndT[4];
+        sStat[3] += gsDrawCount;
         if (++count == 60) {
             if (getenv("BT3_GS_VERBOSE") != NULL) {
+                fprintf(stderr, "time:   per frame at %dx (targets %dx%d, %d in use): %.1f passes, %.1f effect passes, %.1f alpha copies, %.0f draws\n",
+                        SCALE, gsTgtW, gsTgtH, gsTargetCount, sStat[0] / 60.0, sStat[1] / 60.0, sStat[2] / 60.0, sStat[3] / 60.0);
                 fprintf(stderr, "time:   of ending the frame: uploads %.2f ms, issuing the draws %.2f, waiting for the screen's buffer %.2f, "
                                 "showing %.2f, handing over to the driver %.2f\n",
                         (double)sum[0] / 60e6, (double)sum[1] / 60e6, (double)sum[2] / 60e6, (double)sum[3] / 60e6, (double)sum[4] / 60e6);
             }
             count = 0;
             memset(sum, 0, sizeof(sum));
+            memset(sStat, 0, sizeof(sStat));
         }
     }
     /* BT3_SHOT=<n>: every n frames, read the shown buffer back and write port/build/shots/gpu_NNNNN.ppm */
@@ -1243,11 +1356,11 @@ static void vk_target_copy(int src, int dst) {
     cmd = SDL_AcquireGPUCommandBuffer(sDev);
     SDL_zero(bl);
     bl.source.texture = sTgCol[src];
-    bl.source.w = GS_W * SCALE;
-    bl.source.h = GS_H * SCALE;
+    bl.source.w = (Uint32)(gsTgtW * SCALE);
+    bl.source.h = (Uint32)(gsTgtH * SCALE);
     bl.destination.texture = sTgCol[dst];
-    bl.destination.w = GS_W * SCALE;
-    bl.destination.h = GS_H * SCALE;
+    bl.destination.w = (Uint32)(gsTgtW * SCALE);
+    bl.destination.h = (Uint32)(gsTgtH * SCALE);
     bl.load_op = SDL_GPU_LOADOP_DONT_CARE;
     bl.filter = SDL_GPU_FILTER_NEAREST;
     SDL_BlitGPUTexture(cmd, &bl);

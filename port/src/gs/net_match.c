@@ -145,6 +145,68 @@ static int http_post_native(const char *url, const char *json, const char *const
     if (ses != NULL) { WinHttpCloseHandle(ses); }
     return ok;
 }
+#elif defined(__ANDROID__)
+/* Android: no curl; Java's own HTTPS, through GameActivity.httpPost (port/android/java). The thread asking is
+   attached to Java by SDL, and the class is taken from the activity itself (a thread started from C finds only the
+   system's classes by name). */
+#include <jni.h>
+
+static int http_post_native(const char *url, const char *json, const char *const *headers, char *out, size_t size) {
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject act;
+    jclass cls;
+    jmethodID m;
+    jstring ju, jb, jh, jr;
+    char head[512] = "";
+    int ok = 0, i;
+
+    for (i = 0; headers != NULL && headers[i] != NULL; i++) { /* "Name: value" lines, one string for Java */
+        SDL_strlcat(head, headers[i], sizeof(head));
+        SDL_strlcat(head, "\n", sizeof(head));
+    }
+
+    if (env == NULL || (act = (jobject)SDL_GetAndroidActivity()) == NULL) {
+        fprintf(stderr, "bt3: net: matchmaking: no Java environment (%s)\n", SDL_GetError());
+        return 0;
+    }
+    cls = (*env)->GetObjectClass(env, act);
+    m = cls != NULL ? (*env)->GetStaticMethodID(env, cls, "httpPost", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;") : NULL;
+    if (m == NULL) {
+        (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, act);
+        fprintf(stderr, "bt3: net: matchmaking: GameActivity.httpPost is missing\n");
+        return 0;
+    }
+    ju = (*env)->NewStringUTF(env, url);
+    jb = (*env)->NewStringUTF(env, json);
+    jh = (*env)->NewStringUTF(env, head);
+    jr = (jstring)(*env)->CallStaticObjectMethod(env, cls, m, ju, jb, jh);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        fprintf(stderr, "bt3: net: matchmaking: Java threw an exception\n");
+        jr = NULL;
+    }
+    if (jr != NULL) {
+        const char *t = (*env)->GetStringUTFChars(env, jr, NULL);
+        if (t != NULL) {
+            if (SDL_strncmp(t, "ERR ", 4) == 0) { /* (Java's reason, for the log) */
+                fprintf(stderr, "bt3: net: matchmaking: %s: %s\n", url, t + 4);
+                out[0] = '\0';
+            } else {
+                SDL_strlcpy(out, t, size);
+            }
+            ok = out[0] != '\0';
+            (*env)->ReleaseStringUTFChars(env, jr, t);
+        }
+        (*env)->DeleteLocalRef(env, jr);
+    }
+    (*env)->DeleteLocalRef(env, ju);
+    (*env)->DeleteLocalRef(env, jb);
+    (*env)->DeleteLocalRef(env, jh);
+    (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, act);
+    return ok;
+}
 #else
 /* Linux: the system's curl library, if it is there (it nearly always is), loaded when first needed. */
 static int http_post_native(const char *url, const char *json, const char *const *headers, char *out, size_t size) {
@@ -789,6 +851,11 @@ static int SDLCALL update_thread(void *arg) {
     int ok;
 
     (void)arg;
+#ifdef __ANDROID__
+    /* Android (Dragon Rage): the repository's releases are the PC build's, not this app's; nothing to ask */
+    SDL_SetAtomicInt(&sUpdBusy, 0);
+    return 0;
+#endif
     ok = SDL_getenv("BT3_MATCH_CURL") == NULL && http_post_native(url, NULL, NULL, answer, sizeof(answer));
     if (!ok) { /* the `curl` program, as for the service */
 #ifdef _WIN32

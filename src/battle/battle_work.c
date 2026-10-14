@@ -37,6 +37,22 @@ BattleWork *Battle_GetWork(void) {
     return &gBattleWork;
 }
 
+#ifdef PORT /* PC build: the Discord status (port/src/gs/ui.cpp) asks whether a fight runs and whether it is paused */
+extern s32 gPortInBattle; /* battle.c */
+
+s32 Port_BattleRunning(void) {
+    return gPortInBattle; /* (work->running is not it: the work is cleared and rebuilt during the battle's set-up) */
+}
+
+s32 Port_BattlePaused(void) {
+    return (gBattleWork.flags & BATTLE_FLAG_PAUSE_MENU) != 0;
+}
+
+s32 Port_SurvivalOpponent(void) {
+    return gBattleWork.pool.cur;
+}
+#endif
+
 /* Zeroes the whole work, then puts the setup, result and event blocks in their empty state. */
 void Battle_ClearWork(void) {
     memset(Battle_GetWork(), 0, sizeof(BattleWork));

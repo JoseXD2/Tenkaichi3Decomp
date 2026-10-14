@@ -32,4 +32,8 @@ void main() {
     if (s.w > 0.0 && u.misc.z > 0.0) gl_Position.z = (floor(s.z / s.w) + 0.5) / u.misc.z * s.w; // (misc.z < 0: BT3_DEPTH_FRAC, depth with its fractions as before)
     vColor = clamp(floor(inColor), 0.0, 255.0) / 255.0;
     vStq = vec3(st * u.texScale.xy, 1.0);
+#ifdef NO_DEPTH_CLAMP
+    // (GPUs without depth clamping, many phones: the depth kept inside the range here instead of clipped)
+    gl_Position.z = clamp(gl_Position.z, 0.0, max(gl_Position.w, 0.0));
+#endif
 }

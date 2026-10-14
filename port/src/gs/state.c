@@ -43,6 +43,8 @@ static struct { const uint8_t *p; size_t n; const char *what; } sRegion[MAX_REGI
 static int sRegions = -1;
 static int sListed; /* the list of the game's variables was found: without it a saved state is not whole */
 
+extern intptr_t Port_ImageDelta(void); /* plat_mem.c: where the Android loader put the program, minus its link address */
+
 static void regions_init(void) {
     char exe[1024], path[1100];
     uint8_t *heap;
@@ -54,7 +56,9 @@ static void regions_init(void) {
     uint32_t cap = sizeof(exe) - 1;
     long n = _NSGetExecutablePath(exe, &cap) == 0 ? (long)strlen(exe) : -1;
 #else
-    long n = (long)readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    /* BT3_EXE: the game is an image that a loader mapped (port/android/native/loader.c), which names it */
+    long n = getenv("BT3_EXE") != NULL ? (long)snprintf(exe, sizeof(exe), "%s", getenv("BT3_EXE"))
+                                       : (long)readlink("/proc/self/exe", exe, sizeof(exe) - 1);
 #endif
 
     sRegions = 0;
@@ -77,14 +81,14 @@ static void regions_init(void) {
 #ifdef __APPLE__ /* (the list holds game addresses: offsets in the window, port_addr.h) */
                     marks += size == Port_Addr(a == 0 ? (const void *)&gPortResim : (const void *)&gPortVBlanks);
 #else
-                    marks += (uintptr_t)size == (a == 0 ? (uintptr_t)&gPortResim : (uintptr_t)&gPortVBlanks);
+                    marks += (uintptr_t)size + (uintptr_t)Port_ImageDelta() == (a == 0 ? (uintptr_t)&gPortResim : (uintptr_t)&gPortVBlanks);
 #endif
                     continue;
                 }
 #ifdef __APPLE__
                 sRegion[sRegions].p = (const uint8_t *)Port_Ptr((uint32_t)a);
 #else
-                sRegion[sRegions].p = (const uint8_t *)(uintptr_t)a;
+                sRegion[sRegions].p = (const uint8_t *)((uintptr_t)a + (uintptr_t)Port_ImageDelta());
 #endif
                 sRegion[sRegions].n = (size_t)size;
                 sRegion[sRegions].what = "globals";
@@ -106,10 +110,15 @@ static void regions_init(void) {
     sRegion[sRegions].n = heapSize;
     sRegion[sRegions].what = "heap";
     sRegions++;
-    sRegion[sRegions].p = (const uint8_t *)Port_Ptr(0x70000000u);
-    sRegion[sRegions].n = 0x4000;
-    sRegion[sRegions].what = "scratchpad";
-    sRegions++;
+    {
+        extern int gPortScratchpadMapped; /* plat_mem.c: 0 where 0x70000000 was taken (Android) */
+        if (gPortScratchpadMapped) {
+            sRegion[sRegions].p = (const uint8_t *)Port_Ptr(0x70000000u);
+            sRegion[sRegions].n = 0x4000;
+            sRegion[sRegions].what = "scratchpad";
+            sRegions++;
+        }
+    }
 }
 
 uint64_t Port_StateHash(void) {
@@ -206,12 +215,20 @@ void Port_StateLog(unsigned vblank, const void *fight, unsigned fightSize) {
  *                    one's checksum, restore, run the n again and compare each. What online play does when an
  *                    input arrives late: several frames are undone and replayed.
  * ------------------------------------------------------------------------------------------------------------- */
-#if defined(__x86_64__) || defined(__APPLE__)
-#ifdef __APPLE__
-/* macOS: as on Windows, the registers are kept with a setjmp (the C library's, without the signal mask: macOS has
-   no ucontext functions on arm64) and the copy back runs on another stack through the port's stack switch. */
+#if defined(__x86_64__) || defined(__aarch64__)
+#if defined(__APPLE__) || defined(__ANDROID__)
+#define STATE_SJLJ 1
+/* macOS and Android: as on Windows, the registers are kept with a setjmp (the C library's, without the signal mask:
+   neither has the ucontext functions on arm64) and the copy back runs on another stack through a stack switch. */
 #include <setjmp.h>
+#ifdef __ANDROID__ /* ARM64: fn() with the stack pointer at top (fn in x0, top in x1) */
+static void Port_CallOnStack(void (*fn)(void), void *top);
+__asm__(".text\n.p2align 2\nPort_CallOnStack:\n"
+        "    stp x29, x30, [sp, #-16]!\n    mov x29, sp\n    and x1, x1, #~15\n    mov sp, x1\n    blr x0\n"
+        "    mov sp, x29\n    ldp x29, x30, [sp], #16\n    ret\n");
+#else
 extern void Port_CallOnStack(void (*fn)(void), void *top);
+#endif
 #elif defined(_WIN32)
 /* Windows: the registers are kept with the compiler's own minimal setjmp (frame, stack pointer and the place to
    continue; everything else counts as lost over it, which is what a restore is), and the copy back runs on another
@@ -230,7 +247,7 @@ extern void Port_PadPlaySeek(long pos);
 typedef struct Snapshot {
     struct { uint8_t *at; size_t n; uint8_t *copy; size_t cap; } part[MAX_PARTS];
     int parts;
-#ifdef __APPLE__
+#ifdef STATE_SJLJ
     jmp_buf jb;
 #elif defined(_WIN32)
     void *jb[5];
@@ -281,7 +298,7 @@ static int __attribute__((noinline)) state_save(Snapshot *s) {
     s->padPos = Port_PadPlayPos();
     s->loaded = 0;
     part_save(s, sp, (size_t)(top - sp)); /* the stack last: this frame's own contents as they are now */
-#ifdef __APPLE__
+#ifdef STATE_SJLJ
     if (_setjmp(s->jb) != 0) {
         return 1;
     }
@@ -298,7 +315,7 @@ static int __attribute__((noinline)) state_save(Snapshot *s) {
 }
 
 static Snapshot *sLoading;
-#if !defined(_WIN32) && !defined(__APPLE__)
+#if !defined(_WIN32) && !defined(STATE_SJLJ)
 static ucontext_t sLoaderCtx;
 #endif
 
@@ -310,7 +327,7 @@ static void loader(void) {
     }
     Port_PadPlaySeek(s->padPos);
     s->loaded = 1;
-#ifdef __APPLE__
+#ifdef STATE_SJLJ
     _longjmp(s->jb, 1);
 #elif defined(_WIN32)
     __builtin_longjmp(s->jb, 1);
@@ -328,7 +345,7 @@ static void state_load(Snapshot *s) {
     }
     roll_forget();
     sLoading = s;
-#if defined(_WIN32) || defined(__APPLE__)
+#if defined(_WIN32) || defined(STATE_SJLJ)
     Port_CallOnStack(loader, stack + (1 << 20) - 64); /* (does not come back: the loader continues at the save) */
 #else
     getcontext(&sLoaderCtx);
@@ -745,6 +762,11 @@ int Port_RollCan(void) {
     if (sRegions < 0) {
         regions_init();
     }
+#ifndef _WIN32
+    if (sysconf(_SC_PAGESIZE) != (long)PG) {
+        return 0; /* (the write tracking works page by page: phones with 16 KB pages play without rollback) */
+    }
+#endif
     return sListed;
 }
 int Port_RollSave(void) {

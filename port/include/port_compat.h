@@ -7,6 +7,7 @@
 #define PORT_COMPAT_H
 
 #define PORT 1
+#include "port_hwaddr.h"
 
 /* The game's types: on the PS2 `long` is 64 bits. Take over include/types.h. */
 #define TYPES_H

@@ -361,11 +361,21 @@ void Battle_Loop(void) {
 }
 
 /* Runs one whole battle scene; called by Game_Main after the menu overlay returns. */
+#ifdef PORT
+s32 gPortInBattle; /* PC build: 1 from Battle_Main's entry to its exit (the Discord status, port/src/gs/ui.cpp) */
+#endif
+
 s32 Battle_Main(void) {
     Battle_GetWork()->running = 1;
+#ifdef PORT
+    gPortInBattle = 1;
+#endif
     Battle_Init();
     Battle_Loop();
     Battle_Term();
     Battle_GetWork()->running = 0;
+#ifdef PORT
+    gPortInBattle = 0;
+#endif
     return 1;
 }

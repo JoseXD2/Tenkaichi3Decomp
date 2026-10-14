@@ -59,4 +59,8 @@ void main() {
         vColor = u.color1 / 255.0;
         vStq = vec3((mix(nb, na, w) + u.light.w) * 0.5 + 0.5, 0.0, 1.0);
     }
+#ifdef NO_DEPTH_CLAMP
+    // (GPUs without depth clamping, many phones: the depth kept inside the range here instead of clipped)
+    gl_Position.z = clamp(gl_Position.z, 0.0, max(gl_Position.w, 0.0));
+#endif
 }

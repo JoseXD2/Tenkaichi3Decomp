@@ -114,3 +114,9 @@ if __name__ == "__main__":
     t, n = fix(open(sys.argv[1]).read())
     open(sys.argv[2], "w").write(t)
     print(n, "fixes", file=sys.stderr)
+
+
+def strip_target_features(text):
+    """Drops the float unit from the functions' target features (AArch64 software float: see undefined.py)."""
+    text = re.sub(r'"target-features"="[^"]*"', '"target-features"="-fp-armv8,-neon"', text)
+    return re.sub(r'"target-cpu"="[^"]*" ?', '', text)

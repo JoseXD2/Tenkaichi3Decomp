@@ -12,11 +12,26 @@
  *   0x70000000              the 16 KB scratchpad.
  */
 #include "port_host.h"
+#include <sched.h>
 #include "port_addr.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* How far the program sits from the address it is linked for: 0, except on a phone where those addresses were taken
+   and the loader moved it (port/android/native/loader.c, BT3_IMAGE_DELTA). The lists of the program's own addresses
+   (<program>.dat here, <program>.mem in state.c) are shifted by it. */
+intptr_t Port_ImageDelta(void) {
+    static int read;
+    static intptr_t delta;
+    if (!read) {
+        const char *e = getenv("BT3_IMAGE_DELTA");
+        delta = e != NULL ? (intptr_t)strtoull(e, NULL, 16) : 0;
+        read = 1;
+    }
+    return delta;
+}
 
 #define HEAP_BASE 0x003BE000u  /* page that holds the first address */
 #define HEAP_FIRST 0x003BE730u /* what the PS2's malloc returns for the game heap (gHeapStart in a PCSX2 save state) */
@@ -26,7 +41,7 @@ static uint32_t sHeapNext = HEAP_FIRST, sHeapEnd = HEAP_END;
 
 /* The 64-bit builds (the game's pointers 4 bytes wide, ptr32.py) keep the port's blocks for the game in a region of
    their own (Port_LowAlloc); the 32-bit build uses the C library's. */
-#if defined(__x86_64__) || defined(__APPLE__)
+#if defined(__x86_64__) || defined(__APPLE__) || defined(__aarch64__)
 #define PORT_LOW_REGION 1
 #else
 #define PORT_LOW_REGION 0
@@ -277,22 +292,51 @@ int __wrap_main(int argc, char **argv) {
 /* -------------------------------------------------------------------------------------------------------- Linux */
 #include <sys/mman.h>
 #include <unistd.h>
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE 0x100000 /* (older C library headers; Linux 4.17 and later) */
+#endif
 
 static void map(uint32_t addr, uint32_t size, const char *what) {
     void *p = mmap((void *)(uintptr_t)addr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
                    -1, 0);
 
     if (p != (void *)(uintptr_t)addr) {
+        FILE *maps = fopen("/proc/self/maps", "r");
+        char line[512];
         fprintf(stderr, "bt3: cannot map %s at 0x%08X\n", what, addr);
+        while (maps != NULL && fgets(line, sizeof(line), maps) != NULL) { /* what is there instead */
+            unsigned long long lo, hi;
+            if (sscanf(line, "%llx-%llx", &lo, &hi) == 2 && lo < (unsigned long long)addr + size && hi > addr) {
+                fprintf(stderr, "bt3:   taken by %s", line);
+            }
+        }
+        if (maps != NULL) {
+            fclose(maps);
+        }
         exit(2);
     }
+}
+
+/* `size` bytes anywhere below 4 GB (for what has no PS2 address of its own), 0 if there is no room. */
+static uintptr_t map_low_anywhere(uint32_t size) {
+    uintptr_t at;
+    for (at = 0x30000000u; at + size <= 0xFF000000u; at += 0x01000000u) {
+        void *p = mmap((void *)at, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        if (p == (void *)at) {
+            return at;
+        }
+        if (p != MAP_FAILED) {
+            munmap(p, size);
+        }
+    }
+    return 0;
 }
 
 static void map_heap(void) {
     map(HEAP_BASE, HEAP_END - HEAP_BASE, "the game heap");
 }
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(__aarch64__)
 /* The 64-bit build: the game's pointers are still 4 bytes wide (port/tools/ptr32.py), so everything the game can
    point at has to lie below 4 GB.
      - the program itself: linked at 0x20000000 (port/tools/link.py), clear of the regions above;
@@ -303,10 +347,13 @@ static void map_heap(void) {
        Below the program at 0x20000000 on purpose: the C library's own heap starts at a random place in the
        gigabyte ABOVE the program, and a fixed address there (this stack used to be at 0x60000000) is sometimes
        taken, which stopped the program at start now and then. */
+#ifndef __ANDROID__
 #include <malloc.h>
+#endif
 #include <pthread.h>
 #define STACK_BASE 0x02000000u
 #define STACK_SIZE 0x01000000u
+static uintptr_t sStackBase = STACK_BASE; /* (elsewhere below 4 GB when that is taken: Android's own low mappings) */
 extern int __real_main(int argc, char **argv);
 PORT_HOST static int sArgc = 0, sResult = 0; /* (the process's own arguments: an address on its stack, not game state) */
 PORT_HOST static char **sArgv = NULL;
@@ -332,7 +379,7 @@ int __wrap_main(int argc, char **argv) {
         return Match_SignTest();
     }
     pthread_attr_init(&attr);
-    pthread_attr_setstack(&attr, (void *)(uintptr_t)STACK_BASE, STACK_SIZE);
+    pthread_attr_setstack(&attr, (void *)sStackBase, STACK_SIZE);
     if (pthread_create(&th, &attr, game_thread, NULL) != 0) {
         fprintf(stderr, "bt3: cannot start the game thread\n");
         return 2;
@@ -354,6 +401,9 @@ int __wrap_main(int argc, char **argv) {
 /* Set to 1 in the file by strip_data.py: this program does not work without its list. (2, not 0: it has to be in
    the file, not in the zero-filled part of memory.) */
 volatile uint32_t gPortDataStripped = 2;
+
+/* 0 when the PS2 scratchpad could not be put at 0x70000000 (Android): saved states leave it out (state.c) */
+PORT_HOST int gPortScratchpadMapped = 1;
 
 static uint8_t *read_file(const char *path, size_t *size) {
     FILE *fp = fopen(path, "rb");
@@ -396,7 +446,9 @@ static void Port_LoadGameData(void) {
     uint32_t exeSize = sizeof(exe) - 1;
     long n = _NSGetExecutablePath(exe, &exeSize) == 0 ? (long)strlen(exe) : -1;
 #else
-    long n = (long)readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    /* BT3_EXE: the game is an image that a loader mapped (port/android/native/loader.c), which names it */
+    long n = getenv("BT3_EXE") != NULL ? (long)snprintf(exe, sizeof(exe), "%s", getenv("BT3_EXE"))
+                                       : (long)readlink("/proc/self/exe", exe, sizeof(exe) - 1);
 #endif
 
     if (n <= 0 || n >= (long)sizeof(exe) - 1) {
@@ -485,7 +537,7 @@ static void Port_LoadGameData(void) {
             data_fail("damaged file (list of the game's data)", NULL);
         }
         from = src[r[1]] + r[2];
-        memcpy(Port_Ptr(r[0]), from, r[3]);
+        memcpy(Port_Ptr(r[0] + (uint32_t)Port_ImageDelta()), from, r[3]);
         for (k = 0; k < r[3]; k++) {
             hash = (hash ^ from[k]) * 0x100000001B3ull;
         }
@@ -614,19 +666,48 @@ __attribute__((constructor)) static void Port_MapMemory(void) {
 #if defined(__APPLE__)
     map(STACK_BASE, STACK_SIZE, "the game thread's stack");
     low_region_take(); /* the region of Port_LowAlloc, now (see there) */
-#elif defined(__x86_64__) && !defined(_WIN32)
+#elif (defined(__x86_64__) || defined(__aarch64__)) && !defined(_WIN32)
+#ifdef M_ARENA_MAX /* glibc */
     mallopt(M_MMAP_MAX, 0);
     mallopt(M_ARENA_MAX, 1);
-    map(STACK_BASE, STACK_SIZE, "the game thread's stack");
+#endif
+    {
+        void *p = mmap((void *)(uintptr_t)STACK_BASE, STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        if (p != (void *)(uintptr_t)STACK_BASE) {
+            if (p != MAP_FAILED) {
+                munmap(p, STACK_SIZE);
+            }
+            sStackBase = map_low_anywhere(STACK_SIZE);
+            if (sStackBase == 0) {
+                map(STACK_BASE, STACK_SIZE, "the game thread's stack"); /* (reports what is in the way) */
+            }
+            fprintf(stderr, "bt3: the game thread's stack is at 0x%08lX\n", (unsigned long)sStackBase);
+        }
+    }
     low_region_take(); /* the region of Port_LowAlloc, now (see there) */
 #endif
-#if defined(__x86_64__) && defined(_WIN32)
+#if (defined(__x86_64__) || defined(__aarch64__)) && defined(_WIN32)
     low_region_take();
 #endif
     map_heap();
+#ifdef __ANDROID__
+    /* the hardware registers are arrays in the image there (port/include/port_hwaddr.h); the scratchpad is mapped
+       where it is free (the game itself does not address it directly) */
+    {
+        void *p = mmap((void *)(uintptr_t)0x70000000u, 0x4000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        gPortScratchpadMapped = p == (void *)(uintptr_t)0x70000000u;
+        if (!gPortScratchpadMapped) {
+            if (p != MAP_FAILED) {
+                munmap(p, 0x4000);
+            }
+            fprintf(stderr, "bt3: the scratchpad's address 0x70000000 is taken; going on without it\n");
+        }
+    }
+#else
     map(0x10000000u, 0x10000, "the hardware registers");
     map(0x12000000u, 0x2000, "the GS registers");
     map(0x70000000u, 0x4000, "the scratchpad");
+#endif
     gPortStage = "memory ready, before the program's main";
 }
 
@@ -671,7 +752,18 @@ static void low_region_take(void) {
         sLowArena = mmap((void *)(uintptr_t)LOW_ARENA_BASE, LOW_ARENA_SIZE, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
         if (sLowArena == MAP_FAILED || sLowArena != (uint8_t *)(uintptr_t)LOW_ARENA_BASE) { /* taken: anywhere below 4 GB */
+#ifdef MAP_32BIT
             sLowArena = mmap(NULL, LOW_ARENA_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_32BIT, -1, 0);
+#else /* ARM64 has no MAP_32BIT: try addresses below 4 GB one after another */
+            uintptr_t at;
+            for (at = 0x80000000u, sLowArena = MAP_FAILED; at + LOW_ARENA_SIZE <= 0x100000000ull && sLowArena == MAP_FAILED; at += 0x08000000u) {
+                sLowArena = mmap((void *)at, LOW_ARENA_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+                if (sLowArena != MAP_FAILED && sLowArena != (uint8_t *)at) {
+                    munmap(sLowArena, LOW_ARENA_SIZE);
+                    sLowArena = MAP_FAILED;
+                }
+            }
+#endif
         }
         if (sLowArena == MAP_FAILED) {
             fprintf(stderr, "bt3: no memory below 4 GB for the port's own blocks\n");
@@ -697,6 +789,7 @@ void *Port_LowAlloc(size_t size) {
         total = (total + 4095) & ~(size_t)4095;
     }
     while (__sync_lock_test_and_set(&sLowLock, 1)) {
+        sched_yield(); /* (a holder of another priority must get to run: Android's audio threads are real-time) */
     }
     if (sLowArena == NULL) {
         low_region_take();
@@ -748,6 +841,7 @@ void Port_LowFree(void *addr) {
         uint64_t *p = (uint64_t *)addr - 2, total = p[0];
         int i;
         while (__sync_lock_test_and_set(&sLowLock, 1)) {
+            sched_yield(); /* (a holder of another priority must get to run: Android's audio threads are real-time) */
         }
         for (i = 0; i < sLowSizes && sLowList[i].size != total; i++) {
         }

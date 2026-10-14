@@ -131,7 +131,12 @@ __attribute__((constructor(101))) static void crash_init(void) {
     AddVectoredExceptionHandler(1, on_crash);
 }
 #else
+#if defined(__ANDROID__) && __ANDROID_API__ < 33 /* (Android's C library has backtrace from version 13 on) */
+static int backtrace(void **frames, int n) { (void)frames; (void)n; return 0; }
+static void backtrace_symbols_fd(void *const *frames, int n, int fd) { (void)frames; (void)n; (void)fd; }
+#else
 #include <execinfo.h>
+#endif
 #include <fcntl.h>
 #include <signal.h>
 #include <string.h>

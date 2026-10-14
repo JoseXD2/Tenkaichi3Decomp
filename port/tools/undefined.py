@@ -8,7 +8,10 @@ import buildkey
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 # The build variants (BT3_CC): see toolchain.py.
-from toolchain import VARIANT, WIN, MAC, BITS64, PREFIX, CLANG_TARGET, OBJ, DATA, sdl3, llvm
+from toolchain import VARIANT, WIN, MAC, BITS64, PREFIX, CLANG_TARGET, OBJ, DATA, sdl3, ARM, ANDROID, SFX, arm_flags, llvm
+
+X86_ONLY = {"-m32", "-m64", "-malign-double", "-msse2", "-mfpmath=sse", "-mno-sse", "-mno-mmx", "-msoft-float", "-mno-x87"}
+
 
 # macOS / arm64: x86 code-generation flags have no meaning there. Software float is not a front-end option on arm64:
 # the IR is made as usual and the code generator is told there is no floating-point unit (llc -mattr, below), which
@@ -28,6 +31,16 @@ def variant(cmd):
         cc = llvm("clang++" if cmd[0] == "g++" else "clang") if soft else ("clang++" if cmd[0] == "g++" else "clang")
         target = CLANG_TARGET if soft else ["-arch", "arm64", "-mmacosx-version-min=11.0", f"-I{os.environ.get('BT3_SDL3', '/opt/homebrew/opt/sdl3')}/include"]
         return [cc] + target + [a for a in cmd[1:] if a not in MAC_DROP] + (["-fms-extensions"] + MAC_FLAGS if soft else [])
+    if ARM:  # ARM64: everything through clang for the target. Software float is done by llc (compile_ee), not here.
+        cc = "clang++" if cmd[0] in ("g++", "clang++") else "clang"
+        rest = [a for a in cmd[1:] if a not in X86_ONLY]
+        extra = ["-fms-extensions", "-Wno-error=return-mismatch", "-Wno-error=incompatible-function-pointer-types",
+                 "-Wno-error=int-conversion", "-Wno-error=implicit-function-declaration", "-Wno-error=incompatible-pointer-types"]
+        if ANDROID:  # the C library's variables (stderr) through the GOT: no copy relocations, whose sizes the NDK's stub libraries get wrong
+            extra += ["-fno-direct-access-external-data"]
+        if "-msoft-float" in cmd:  # (no vector code: the code generator without NEON cannot split some vector operations)
+            extra += ["-fno-vectorize", "-fno-slp-vectorize"]
+        return [cc + SFX] + CLANG_TARGET + arm_flags() + rest + extra
     if BITS64:
         cmd = ["-m64" if a == "-m32" else a for a in cmd if a != "-malign-double"]
     if WIN:
@@ -40,7 +53,7 @@ def variant(cmd):
     extra = ["-fms-extensions"] if BITS64 else []
     if WIN:  # GCC's structure layout, not Microsoft's bit-field rules: the game's structures are the PS2's
         extra += ["-mno-ms-bitfields", "-D__CRT__NO_INLINE"]  # (no inline maths of the headers: they use long double) + ([f"-I{sdl3() / 'include'}"] if sdl3() else [])
-    return ["clang"] + CLANG_TARGET + cmd[1:] + ["-mno-x87", "-Wno-error=return-mismatch"] + extra
+    return ["clang"] + CLANG_TARGET + cmd[1:] + ["-mno-x87", "-Wno-error=return-mismatch", "-Wno-error=return-type"] + extra
 
 def run(cmd, **kw):
     if MAC and "-msoft-float" in cmd:  # software float on arm64 is a code-generator option: through IR and llc
@@ -80,6 +93,7 @@ TEXT_END, GAME_END = 0x2BF6B0, 0x273CF0  # end of all code; end of game code (li
 
 def compile_ee(cmd, src, o):
     """Compiles src with the PS2 compiler's float constants: preprocess, eeconst.transform, compile the result."""
+    soft = "-msoft-float" in cmd
     cmd = variant(cmd)
     pre = [a for a in cmd if a != "-c"] + ["-E", str(src)]
     r = subprocess.run(pre, cwd=ROOT, capture_output=True, text=True)
@@ -87,17 +101,18 @@ def compile_ee(cmd, src, o):
         return r
     i = pathlib.Path(str(o)[:-2] + ".i")
     i.write_text(eeconst.transform(r.stdout))
-    if BITS64 and (cmd[0] == "clang" or MAC) and not o.name.startswith("nl_"):  # the game's pointers: 4 bytes (not the maths library: no game text)
+    if BITS64 and (cmd[0].startswith("clang") or MAC) and not o.name.startswith("nl_"):  # the game's pointers: 4 bytes (not the maths library: no game text)
         import ptr32
         std = next((a for a in cmd if a.startswith("-std=")), "-std=gnu89")
         try:
             text = ptr32.transform(str(i), ["-x", "cpp-output"] + (CLANG_TARGET or ["-m64"]) + [std, "-fms-extensions", "-w", "-Wno-error=return-mismatch"] +
+                                   (arm_flags() if ARM else []) +
                                    (["-mno-ms-bitfields"] if WIN else []) +
                                    (["-Wno-error=return-type"] if MAC else []))  # (pip's libclang 18: the older name of return-mismatch)
         except RuntimeError as e:
             return subprocess.CompletedProcess(cmd, 1, "", f"ptr32: {e}\n")
         i.write_text(text, encoding="latin-1")
-    if cmd[0] == "clang" or MAC:  # no -fpreprocessed: the input is named as preprocessed, and the forced includes are dropped
+    if cmd[0].startswith("clang") or MAC:  # no -fpreprocessed: the input is named as preprocessed, and the forced includes are dropped
         c2, skip = [], False
         for a in cmd:
             if skip:
@@ -117,8 +132,13 @@ def compile_ee(cmd, src, o):
             if r.returncode:
                 return r
             text, _ = irfix.fix(ll.read_text())
+            mattr = []
+            if ARM and soft:  # AArch64 has no software-float ABI in clang: the code generator, without its float unit,
+                # calls __addsf3 & co. (softfloat_ps2.c) for every float operation, as -msoft-float does on x86
+                text = irfix.strip_target_features(text)
+                mattr = ["-mattr=-fp-armv8,-neon,-crypto,-sve"]
             ll.write_text(text)
-            return subprocess.run(["llc", "-O2", "-filetype=obj", "-relocation-model=static", str(ll), "-o", str(o)], cwd=ROOT, capture_output=True, text=True)
+            return subprocess.run(["llc" + SFX, "-O2", "-filetype=obj", "-relocation-model=static"] + mattr + [str(ll), "-o", str(o)], cwd=ROOT, capture_output=True, text=True)
         return subprocess.run(c2 + ["-x", "cpp-output", str(i), "-o", str(o)], cwd=ROOT, capture_output=True, text=True)
     return subprocess.run(cmd + ["-fpreprocessed", str(i), "-o", str(o)], cwd=ROOT, capture_output=True, text=True)
 
@@ -162,7 +182,8 @@ def main():
                 r = subprocess.run([llvm("clang")] + CLANG_TARGET + ["-c", "-x", "assembler", str(m), "-o", str(DATA / (f.name[:-2] + ".o"))],
                                    cwd=ROOT, capture_output=True, text=True)
             else:
-                r = subprocess.run([PREFIX + "as"] + ([] if WIN else ["--64"]) + [str(f), "-o", str(DATA / (f.name[:-2] + ".o"))], capture_output=True, text=True)
+                asm = (["clang" + SFX] + CLANG_TARGET + ["-c", "-x", "assembler"]) if ARM else [PREFIX + "as"] + ([] if WIN else ["--64"])
+                r = subprocess.run(asm + [str(f), "-o", str(DATA / (f.name[:-2] + ".o"))], capture_output=True, text=True)
             if r.returncode:
                 print("FAILED", f.name, r.stderr.splitlines()[0][:150])
         objs += [str(o) for o in sorted(DATA.glob("*.o"))]
@@ -190,17 +211,20 @@ def main():
     if not nz.exists() or nz.read_text() != nz_text:
         nz.write_text(nz_text)
     shader_sources = sorted((ROOT / "port/src/gs/shaders").glob("*.*")) + [nz]
-    for src in shader_sources:  # gs.vert -> kGsVertSpv, outline.frag -> kOutlineFragSpv
+    # each vertex shader twice: as written, and with NO_DEPTH_CLAMP (kGsVertNcSpv) for GPUs without depth clamping
+    variants = [(src, "") for src in shader_sources] + [(src, "Nc") for src in shader_sources if src.suffix == ".vert"]
+    for src, nc in variants:  # gs.vert -> kGsVertSpv, outline.frag -> kOutlineFragSpv
         stage = src.suffix[1:]
-        name = "k" + src.stem.capitalize() + stage.capitalize() + "Spv"
-        spv = gen / (src.name + ".spv")
+        name = "k" + src.stem.capitalize() + stage.capitalize() + nc + "Spv"
+        spv = gen / (src.name + (".nc" if nc else "") + ".spv")
+        defs = ["-DNO_DEPTH_CLAMP"] if nc else []
         if shutil.which("glslc") is None and spv.exists() and spv.stat().st_mtime >= src.stat().st_mtime:
             pass  # no shader compiler here (the release container): the compiled shader that was put in place is current
         else:
             if shutil.which("glslc") is not None:
-                r = subprocess.run(["glslc", f"-fshader-stage={stage}", str(src), "-o", str(spv)], capture_output=True, text=True)
+                r = subprocess.run(["glslc", f"-fshader-stage={stage}"] + defs + [str(src), "-o", str(spv)], capture_output=True, text=True)
             else:  # the reference compiler of the same language (package glslang-tools)
-                r = subprocess.run(["glslangValidator", "-V", "-S", stage, str(src), "-o", str(spv)], capture_output=True, text=True)
+                r = subprocess.run(["glslangValidator", "-V", "-S", stage] + defs + [str(src), "-o", str(spv)], capture_output=True, text=True)
             if r.returncode:
                 print("FAILED shader", src.name, r.stderr[:300])
                 continue
@@ -260,6 +284,17 @@ def main():
             cmd += os.environ["BT3_PORT_CFLAGS"].split()
         if soft and not names:  # the port's own soft-float code: PS2 constants; the vector references are written for the host
             r = compile_ee(cmd, f, o)
+        elif soft and ARM:
+            # the vector references (src/port/vu0_*.c) in software float as well: through LLVM IR and llc without the
+            # float unit, as compile_ee does (ARM has no -msoft-float). Compiled with the float unit they would take
+            # float arguments in other registers than their soft-float callers pass them in.
+            import irfix
+            ll = pathlib.Path(str(o)[:-2] + ".ll")
+            r = run(cmd + ["-S", "-emit-llvm", str(f), "-o", str(ll)], cwd=ROOT, capture_output=True, text=True)
+            if r.returncode == 0:
+                ll.write_text(irfix.strip_target_features(ll.read_text()))
+                r = subprocess.run(["llc" + SFX, "-O2", "-filetype=obj", "-relocation-model=static", "-mattr=-fp-armv8,-neon,-crypto,-sve",
+                                    str(ll), "-o", str(o)], cwd=ROOT, capture_output=True, text=True)
         else:
             r = run(cmd + [str(f), "-o", str(o)], cwd=ROOT, capture_output=True, text=True)
         if r.returncode:
@@ -280,7 +315,7 @@ def main():
     # Native Windows has a 32767-character CreateProcess limit; absolute object paths exceed it.
     argsfile = ROOT / "port/build/nm-objects.rsp"
     argsfile.write_text("\n".join('"' + p.replace('\\', '/') + '"' for p in objs))
-    out = subprocess.run([llvm("llvm-nm") if MAC else PREFIX + "nm", "-A", "@" + str(argsfile)], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run([llvm("llvm-nm") if MAC else ("llvm-nm" + SFX) if ARM else PREFIX + "nm", "-A", "@" + str(argsfile)], capture_output=True, text=True, check=True).stdout
     for l in out.splitlines():
         m = re.match(r"\S+:\s*([0-9a-f]*)\s+(\w)\s+(\S+)$", l)
         if not m:

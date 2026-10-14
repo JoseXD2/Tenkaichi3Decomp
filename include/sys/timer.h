@@ -2,12 +2,16 @@
 #define SYS_TIMER_H
 
 #include "types.h"
+#ifndef PORT_HW /* (port/include/port_hwaddr.h; the PS2 build: the addresses themselves) */
+#define PORT_HW(a) (a)
+#define PORT_GS(a) (a)
+#endif
 
 /* EE hardware timers 0 and 1 used as a stopwatch, src/sys/timer.c = 0x11F190..0x11F548. */
 
-#define TIMER_COUNT(ch) (*(volatile u32 *)(0x10000000 + (ch) * 0x800)) /* Tn_COUNT */
-#define TIMER_MODE(ch) (*(volatile u32 *)(0x10000010 + (ch) * 0x800))  /* Tn_MODE */
-#define TIMER_COMP(ch) (*(volatile u32 *)(0x10000020 + (ch) * 0x800))  /* Tn_COMP */
+#define TIMER_COUNT(ch) (*(volatile u32 *)PORT_HW(0x10000000 + (ch) * 0x800)) /* Tn_COUNT */
+#define TIMER_MODE(ch) (*(volatile u32 *)PORT_HW(0x10000010 + (ch) * 0x800))  /* Tn_MODE */
+#define TIMER_COMP(ch) (*(volatile u32 *)PORT_HW(0x10000020 + (ch) * 0x800))  /* Tn_COMP */
 
 /* Tn_MODE bits */
 #define TIMER_MODE_CLK_HBLANK 0x003 /* count horizontal blanks */

@@ -770,6 +770,17 @@ int Port_PadRead(int socket, unsigned char *data) {
         if (HELD(23)) { rx = 0xFF; }
 #undef HELD
     }
+#ifdef __ANDROID__
+    if (socket == 0 && !gPortOverlayOpen) { /* the on-screen pad (ui.cpp): its sticks win while they are moved */
+        unsigned tb;
+        unsigned char tlx, tly, trx, tr_y;
+        if (Ui_TouchPad(&tb, &tlx, &tly, &trx, &tr_y)) {
+            btn |= tb;
+            if (tlx != 0x80 || tly != 0x80) { lx = tlx; ly = tly; }
+            if (trx != 0x80 || tr_y != 0x80) { rx = trx; ry = tr_y; }
+        }
+    }
+#endif
     if (socket == 0) {
         btn |= script_buttons();
     }

@@ -30,15 +30,40 @@ static float from(uint32_t u) {
 
 /* Mathf_WrapAngle (0x11F548): range = half + half; while (angle < range) angle += range;
    while (half < angle) angle -= range. */
+#ifdef BT3_WRAP_DIAG
+#include <stdio.h>
+#include "port_host.h"
+PORT_HOST static int sWrapWarned; /* (diagnosis: an angle so far out that wrapping it takes a long time) */
+/* the callers, by the chain of frame records (x29) */
+__attribute__((noinline)) static void wrap_report(uint32_t a0, uint32_t h) {
+    void **fp = (void **)__builtin_frame_address(0);
+    char buf[400];
+    int len, k;
+    len = snprintf(buf, sizeof(buf), "mathf: WrapAngle(%08x, %08x) loops; callers:", a0, h);
+    for (k = 0; k < 10 && fp != NULL && (uintptr_t)fp > 0x10000u && len < (int)sizeof(buf) - 20; k++) {
+        len += snprintf(buf + len, sizeof(buf) - (size_t)len, " %p", fp[1]);
+        fp = (void **)fp[0];
+    }
+    fprintf(stderr, "%s\n", buf);
+}
+#endif
 float Mathf_WrapAngle(float angle, float half) {
     uint32_t a = bits(angle), h = bits(half);
     uint32_t range = RefVu0_AddBits(h, h);
+#ifdef BT3_WRAP_DIAG
+    uint32_t n = 0, a0 = a;
+#define WRAP_COUNT() if (++n == 100000u && sWrapWarned < 20) { sWrapWarned++; wrap_report(a0, h); }
+#else
+#define WRAP_COUNT()
+#endif
 
     while (RefVu0_LtBits(a, range)) {
         a = RefVu0_AddBits(a, range);
+        WRAP_COUNT();
     }
     while (RefVu0_LtBits(h, a)) {
         a = RefVu0_SubBits(a, range);
+        WRAP_COUNT();
     }
     return from(a);
 }

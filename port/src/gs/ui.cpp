@@ -2,6 +2,7 @@
 // of a controller, or the key and button of its Controls list (gs_input.c: PortInput_Hotkey).
 // Everything it shows lives elsewhere (ui.h): the renderer's settings in gs_gpu.c, the bindings in gs_input.c.
 // It runs on the render thread, which owns the window and its events.
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,9 @@
 #include "../port_release.h"
 #include "menu_text.h"
 
+// Phones (Android): everything larger, by the display's density, and the window kept inside the screen. On a PC 1.
+static float sUiScale = 1.0f;
+#define S(x) ((x) * sUiScale)
 static int sMeter = -1; // the meter (frame rate, connection): -1 not read yet
 static bool meter_on(void);
 static int sGL; // 1: the OpenGL back end draws the window (ImGui's OpenGL3 backend, no SDL GPU device)
@@ -337,6 +341,7 @@ int Ui_Init(SDL_Window *window, SDL_GPUDevice *device, void *gl_context) {
         "/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/noto/NotoSans-Regular.ttf", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
         "/usr/share/fonts/liberation/LiberationSans-Regular.ttf", "C:\\Windows\\Fonts\\segoeui.ttf",
+        "/system/fonts/Roboto-Regular.ttf", "/system/fonts/NotoSans-Regular.ttf", "/system/fonts/DroidSans.ttf",
     };
     ImGui_ImplSDLGPU3_InitInfo info;
 
@@ -346,6 +351,17 @@ int Ui_Init(SDL_Window *window, SDL_GPUDevice *device, void *gl_context) {
     io.IniFilename = NULL; // no window-layout file next to the game
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad; // (a controller opens it too: START + SELECT)
     style();
+#ifdef __ANDROID__
+    {   // the menu on a phone: a controller moves through it, a finger taps it; sizes by the screen's density
+        float dpi = SDL_GetDisplayContentScale(SDL_GetDisplayForWindow(window));
+        sUiScale = dpi > 0.0f ? dpi * 0.75f : 2.0f;
+        sUiScale = sUiScale < 1.0f ? 1.0f : sUiScale > 4.0f ? 4.0f : sUiScale;
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+        ImGui::GetStyle().ScaleAllSizes(sUiScale);
+        ImGui::GetStyle().FontScaleDpi = sUiScale;
+        ImGui::GetStyle().TouchExtraPadding = ImVec2(4.0f * sUiScale, 4.0f * sUiScale);
+    }
+#endif
     for (size_t i = 0; i < sizeof(fonts) / sizeof(fonts[0]); i++) {
         FILE *fp = fopen(fonts[i], "rb");
         if (fp != NULL) {
@@ -494,6 +510,570 @@ static void build_quit(void) {
     }
 }
 
+// ---- Touch controls (phones): a PS2 controller drawn over the picture --------------------------------------------
+// Shown by default when no controller is connected (Controls tab: off / automatic / always, size, opacity, and an
+// editor where each part is dragged to its place and made larger or smaller). The fingers are read from SDL's touch
+// events here (render thread); gs_input.c asks Ui_TouchPad for player 1's buttons and sticks each time the game
+// reads its pad. Positions are kept as fractions of the screen, so a layout fits any phone.
+enum { TB_SELECT = 0x0001, TB_L3 = 0x0002, TB_R3 = 0x0004, TB_START = 0x0008, TB_UP = 0x0010, TB_RIGHT = 0x0020, TB_DOWN = 0x0040,
+       TB_LEFT = 0x0080, TB_L2 = 0x0100, TB_R2 = 0x0200, TB_L1 = 0x0400, TB_R1 = 0x0800, TB_TRIANGLE = 0x1000, TB_CIRCLE = 0x2000,
+       TB_CROSS = 0x4000, TB_SQUARE = 0x8000 }; // (include/sys/pad.h's bits, as gs_input.c has them)
+enum { TE_DPAD, TE_FACE, TE_LSTICK, TE_RSTICK, TE_L, TE_R, TE_SELECT, TE_START, TE_L3, TE_R3, TE_COUNT };
+static const struct { const char *key, *name; float x, y; } kTouchEl[TE_COUNT] = {
+    {"dpad", "D-pad", 0.27f, 0.83f},       {"face", "Buttons", 0.87f, 0.65f},  {"lstick", "Left stick", 0.12f, 0.66f},
+    {"rstick", "Right stick", 0.72f, 0.85f}, {"l", "L1 / L2", 0.065f, 0.30f}, {"r", "R1 / R2", 0.935f, 0.30f},
+    {"select", "SELECT", 0.43f, 0.93f},     {"start", "START", 0.57f, 0.93f},  {"l3", "L3", 0.23f, 0.47f},
+    {"r3", "R3", 0.77f, 0.47f},
+};
+static struct { float x, y, s; } sTe[TE_COUNT];
+static int sTouchMode = -1, sTouchSize = 100, sTouchAlpha = 70; // mode: 0 off, 1 when no controller is connected, 2 always
+static bool sTouchEdit;                                         // the layout editor is open
+static int sTouchSel = -1;                                      // the part chosen in the editor
+struct TouchFinger { SDL_FingerID id; float x, y, gx, gy; int el; };
+static TouchFinger sFingers[10];
+static int sFingerCount;
+static float sPanel[4]; // the editor's panel (x0, y0, x1, y1) as last drawn: touches there are the panel's
+
+static void touch_size(float *w, float *h) {
+    ImGuiIO &io = ImGui::GetIO();
+    *w = io.DisplaySize.x > 0.0f ? io.DisplaySize.x : 1280.0f;
+    *h = io.DisplaySize.y > 0.0f ? io.DisplaySize.y : 720.0f;
+}
+
+static void touch_reset_layout(void) {
+    for (int i = 0; i < TE_COUNT; i++) {
+        sTe[i].x = kTouchEl[i].x;
+        sTe[i].y = kTouchEl[i].y;
+        sTe[i].s = 1.0f;
+    }
+}
+
+static void touch_load(void) {
+    char k[48];
+    if (sTouchMode >= 0) {
+        return;
+    }
+#ifdef __ANDROID__
+    sTouchMode = Port_Setting("touch", 1);
+#else
+    sTouchMode = Port_Setting("touch", 0); // (a PC: only if asked for, on a touch screen)
+#endif
+    sTouchSize = Port_Setting("touch_size", 100);
+    sTouchAlpha = Port_Setting("touch_alpha", 70);
+    for (int i = 0; i < TE_COUNT; i++) {
+        snprintf(k, sizeof(k), "touch_%s_x", kTouchEl[i].key);
+        sTe[i].x = (float)Port_Setting(k, (int)(kTouchEl[i].x * 1000.0f + 0.5f)) / 1000.0f;
+        snprintf(k, sizeof(k), "touch_%s_y", kTouchEl[i].key);
+        sTe[i].y = (float)Port_Setting(k, (int)(kTouchEl[i].y * 1000.0f + 0.5f)) / 1000.0f;
+        snprintf(k, sizeof(k), "touch_%s_s", kTouchEl[i].key);
+        sTe[i].s = (float)Port_Setting(k, 100) / 100.0f;
+    }
+}
+
+static void touch_save(void) {
+    char k[48];
+    Port_SettingSave("touch", sTouchMode);
+    Port_SettingSave("touch_size", sTouchSize);
+    Port_SettingSave("touch_alpha", sTouchAlpha);
+    for (int i = 0; i < TE_COUNT; i++) {
+        snprintf(k, sizeof(k), "touch_%s_x", kTouchEl[i].key);
+        Port_SettingSave(k, (int)(sTe[i].x * 1000.0f + 0.5f));
+        snprintf(k, sizeof(k), "touch_%s_y", kTouchEl[i].key);
+        Port_SettingSave(k, (int)(sTe[i].y * 1000.0f + 0.5f));
+        snprintf(k, sizeof(k), "touch_%s_s", kTouchEl[i].key);
+        Port_SettingSave(k, (int)(sTe[i].s * 100.0f + 0.5f));
+    }
+    Port_SettingsWrite();
+}
+
+static bool touch_shown(void) {
+    touch_load();
+    if (sTouchEdit) {
+        return true;
+    }
+    if (sOpen || sTouchMode == 0) {
+        return false;
+    }
+    return sTouchMode == 2 || !SDL_HasGamepad();
+}
+
+// A part's centre and size unit in screen points.
+// How far a part reaches from its centre, in its units (x, y).
+static void touch_extent(int e, float *hx, float *hy) {
+    switch (e) {
+    case TE_DPAD: *hx = *hy = 1.45f; break;
+    case TE_FACE: *hx = *hy = 1.6f; break;
+    case TE_LSTICK: case TE_RSTICK: *hx = *hy = 1.25f; break;
+    case TE_L: case TE_R: *hx = 0.95f; *hy = 0.95f; break;
+    case TE_SELECT: case TE_START: *hx = 0.6f; *hy = 0.6f; break;
+    default: *hx = *hy = 0.55f; break;
+    }
+}
+
+static void touch_geo(int e, float *cx, float *cy, float *u) {
+    float w, h, hx, hy;
+    touch_size(&w, &h);
+    *u = (w < h ? w : h) * 0.085f * (float)sTouchSize / 100.0f * sTe[e].s;
+    *cx = sTe[e].x * w;
+    *cy = sTe[e].y * h;
+    touch_extent(e, &hx, &hy); /* kept whole on the screen, whatever its size and the screen's shape, and clear of
+                                  the camera cut-out and rounded corners (the window's safe area) */
+    hx *= *u;
+    hy *= *u;
+    float x0 = 0.0f, y0 = 0.0f, x1 = w, y1 = h;
+    {
+        SDL_Rect sa;
+        SDL_Window *win = GsDraw_Window();
+        if (win != NULL && SDL_GetWindowSafeArea(win, &sa) && sa.w > 0 && sa.h > 0) {
+            x0 = (float)sa.x; y0 = (float)sa.y; x1 = (float)(sa.x + sa.w); y1 = (float)(sa.y + sa.h);
+        }
+    }
+    if (2.0f * hx < x1 - x0) { *cx = fminf(fmaxf(*cx, x0 + hx), x1 - hx); }
+    if (2.0f * hy < y1 - y0) { *cy = fminf(fmaxf(*cy, y0 + hy), y1 - hy); }
+}
+
+// Whether (x, y) is on part e; *d is how far from its centre, in its units (to pick the nearest of two).
+static bool touch_hit(int e, float x, float y, float *d) {
+    float cx, cy, u;
+    touch_geo(e, &cx, &cy, &u);
+    float dx = (x - cx) / u, dy = (y - cy) / u;
+    *d = sqrtf(dx * dx + dy * dy);
+    switch (e) {
+    case TE_DPAD: return *d < 1.6f;
+    case TE_FACE: return *d < 1.85f;
+    case TE_LSTICK: case TE_RSTICK: return *d < 1.6f;
+    case TE_L: case TE_R: return fabsf(dx) < 0.95f && fabsf(dy) < 1.0f;
+    case TE_SELECT: case TE_START: return fabsf(dx) < 0.8f && fabsf(dy) < 0.5f;
+    default: return *d < 0.65f; // L3, R3
+    }
+}
+
+static const float kFaceD = 0.95f, kFaceR = 0.5f, kStickR = 1.15f;
+static const float kFacePos[4][2] = {{0.0f, -1.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}, {-1.0f, 0.0f}}; // triangle, circle, cross, square
+static const unsigned kFaceBit[4] = {TB_TRIANGLE, TB_CIRCLE, TB_CROSS, TB_SQUARE};
+
+// What a finger on part e at (x, y) presses; a stick's deflection (-1..1) in *ax, *ay.
+static unsigned touch_press(int e, float x, float y, float *ax, float *ay) {
+    float cx, cy, u;
+    touch_geo(e, &cx, &cy, &u);
+    float dx = (x - cx) / u, dy = (y - cy) / u, len = sqrtf(dx * dx + dy * dy);
+    unsigned b = 0;
+    switch (e) {
+    case TE_DPAD: // eight ways: a direction counts beyond 22.5 degrees from the axis across it
+        if (len > 0.25f) {
+            float nx = dx / len, ny = dy / len;
+            b |= ny < -0.38f ? TB_UP : 0;
+            b |= ny > 0.38f ? TB_DOWN : 0;
+            b |= nx < -0.38f ? TB_LEFT : 0;
+            b |= nx > 0.38f ? TB_RIGHT : 0;
+        }
+        return b;
+    case TE_FACE: { // every button the finger is on (between two: both), else the nearest
+        int best = 0;
+        float bd = 1e9f;
+        for (int i = 0; i < 4; i++) {
+            float ex = dx - kFacePos[i][0] * kFaceD, ey = dy - kFacePos[i][1] * kFaceD, d = sqrtf(ex * ex + ey * ey);
+            if (d < 0.66f) {
+                b |= kFaceBit[i];
+            }
+            if (d < bd) {
+                bd = d;
+                best = i;
+            }
+        }
+        return b ? b : kFaceBit[best];
+    }
+    case TE_LSTICK: case TE_RSTICK:
+        *ax = dx / kStickR;
+        *ay = dy / kStickR;
+        if (len > kStickR) {
+            *ax = dx / len;
+            *ay = dy / len;
+        }
+        return 0;
+    case TE_L: return dy < 0.0f ? TB_L2 : TB_L1;
+    case TE_R: return dy < 0.0f ? TB_R2 : TB_R1;
+    case TE_SELECT: return TB_SELECT;
+    case TE_START: return TB_START;
+    case TE_L3: return TB_L3;
+    default: return TB_R3;
+    }
+}
+
+static int touch_part_at(float x, float y) {
+    int best = -1;
+    float bd = 1e9f, d;
+    for (int e = 0; e < TE_COUNT; e++) {
+        if (touch_hit(e, x, y, &d) && d < bd) {
+            bd = d;
+            best = e;
+        }
+    }
+    return best;
+}
+
+static void touch_fingers_clear(void) { sFingerCount = 0; }
+
+// SDL's finger events. 1 = the touch controls used it.
+static int touch_event(const SDL_Event *ev) {
+    float w, h;
+    if (ev->type != SDL_EVENT_FINGER_DOWN && ev->type != SDL_EVENT_FINGER_MOTION && ev->type != SDL_EVENT_FINGER_UP &&
+        ev->type != SDL_EVENT_FINGER_CANCELED) {
+        return 0;
+    }
+    if (!touch_shown()) {
+        sFingerCount = 0;
+        return 0;
+    }
+    touch_size(&w, &h);
+    float x = ev->tfinger.x * w, y = ev->tfinger.y * h;
+    int i;
+    for (i = 0; i < sFingerCount && sFingers[i].id != ev->tfinger.fingerID; i++) {
+    }
+    if (ev->type == SDL_EVENT_FINGER_DOWN) {
+        if (sTouchEdit && x >= sPanel[0] && x <= sPanel[2] && y >= sPanel[1] && y <= sPanel[3]) {
+            return 0; // the editor's buttons (ImGui, through the mouse SDL makes of the touch)
+        }
+        if (i == sFingerCount) {
+            if (sFingerCount == 10) {
+                return 1;
+            }
+            sFingerCount++;
+        }
+        TouchFinger &f = sFingers[i];
+        f.id = ev->tfinger.fingerID;
+        f.x = x;
+        f.y = y;
+        f.el = touch_part_at(x, y);
+        if (sTouchEdit) {
+            sTouchSel = f.el;
+            if (f.el >= 0) {
+                f.gx = sTe[f.el].x * w - x;
+                f.gy = sTe[f.el].y * h - y;
+            }
+        }
+        return 1;
+    }
+    if (i == sFingerCount) {
+        return 0;
+    }
+    if (ev->type == SDL_EVENT_FINGER_MOTION) {
+        sFingers[i].x = x;
+        sFingers[i].y = y;
+        if (sTouchEdit && sFingers[i].el >= 0) { // dragging a part to its new place
+            int e = sFingers[i].el;
+            float nx = (x + sFingers[i].gx) / w, ny = (y + sFingers[i].gy) / h;
+            sTe[e].x = nx < 0.02f ? 0.02f : nx > 0.98f ? 0.98f : nx;
+            sTe[e].y = ny < 0.03f ? 0.03f : ny > 0.97f ? 0.97f : ny;
+        }
+        return 1;
+    }
+    // up or cancelled
+    sFingers[i] = sFingers[--sFingerCount];
+    if (sTouchEdit) {
+        touch_save();
+    }
+    return 1;
+}
+
+// Player 1's buttons and sticks from the fingers on the screen. 0 = the touch controls are not in use.
+int Ui_TouchPad(unsigned *btn, unsigned char *lx, unsigned char *ly, unsigned char *rx, unsigned char *ry) {
+    if (!sReady || sTouchEdit || !touch_shown()) {
+        return 0;
+    }
+    unsigned b = 0;
+    float sx[2] = {0.0f, 0.0f}, sy[2] = {0.0f, 0.0f};
+    for (int i = 0; i < sFingerCount; i++) {
+        int e = sFingers[i].el;
+        float ax = 0.0f, ay = 0.0f;
+        if (e < 0) {
+            continue;
+        }
+        b |= touch_press(e, sFingers[i].x, sFingers[i].y, &ax, &ay);
+        if (e == TE_LSTICK || e == TE_RSTICK) {
+            sx[e - TE_LSTICK] = ax;
+            sy[e - TE_LSTICK] = ay;
+        }
+    }
+#define AX(v) ((unsigned char)(int)fminf(255.0f, fmaxf(0.0f, 128.0f + (v) * 127.5f)))
+    *btn = b;
+    *lx = AX(sx[0]);
+    *ly = AX(sy[0]);
+    *rx = AX(sx[1]);
+    *ry = AX(sy[1]);
+#undef AX
+    return 1;
+}
+
+// ---- drawing: a DualShock 2 in glass (dark glossy buttons, the four coloured symbols, PS2 shapes) ----
+static float sTa; // this frame's opacity, 0..1
+static ImU32 tcol(int r, int g, int b, float a) { return IM_COL32(r, g, b, (int)fminf(255.0f, fmaxf(0.0f, a * sTa * 255.0f))); }
+static ImU32 tmix(const int *c, int r, int g, int b, float t, float a) { // c mixed toward (r, g, b) by t
+    return tcol((int)((float)c[0] + ((float)r - (float)c[0]) * t), (int)((float)c[1] + ((float)g - (float)c[1]) * t),
+                (int)((float)c[2] + ((float)b - (float)c[2]) * t), a);
+}
+
+static void ttext(ImDrawList *dl, float cx, float cy, float size, ImU32 col, const char *s) {
+    ImFont *font = ImGui::GetFont();
+    ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.0f, s);
+    dl->AddText(font, size, ImVec2(cx - ts.x * 0.5f, cy - ts.y * 0.5f), col, s);
+}
+
+static const int kBody[3] = {38, 38, 46};     // the pad's black plastic
+static const int kAccent[3] = {245, 140, 33}; // (the app's orange: a stick being held)
+
+// A round glossy button: shadow, body with a soft top light, gloss, rim. `tint` (or NULL) colours it.
+static void tglossy(ImDrawList *dl, float x, float y, float r, const int *tint, float tintAmount, bool on) {
+    const int *c = kBody;
+    dl->AddCircleFilled(ImVec2(x, y + r * 0.10f), r * 1.02f, tcol(0, 0, 0, 0.35f), 40); // shadow
+    for (int k = 0; k < 4; k++) { // body: darker at the rim, lighter towards the top-left
+        float t = (float)k / 3.0f, rr = r * (1.0f - 0.16f * (float)k);
+        float lift = on ? 0.05f : 0.10f + 0.08f * t;
+        ImU32 col = tint != NULL ? tmix(c, tint[0], tint[1], tint[2], tintAmount * (0.6f + 0.4f * t), 0.88f)
+                                 : tmix(c, 255, 255, 255, lift, 0.85f);
+        dl->AddCircleFilled(ImVec2(x - r * 0.04f * t, y - r * 0.05f * t), rr, col, 40);
+    }
+    if (!on) { // gloss
+        dl->AddEllipseFilled(ImVec2(x - r * 0.18f, y - r * 0.42f), ImVec2(r * 0.55f, r * 0.26f), tcol(255, 255, 255, 0.16f), -0.35f, 28);
+    }
+    dl->AddCircle(ImVec2(x, y), r, tcol(0, 0, 0, 0.7f), 40, 0.05f * r);
+}
+
+static void tdraw_face(ImDrawList *dl, float cx, float cy, float u, unsigned b) {
+    static const int kCol[4][3] = {{64, 205, 140}, {236, 72, 84}, {96, 146, 236}, {232, 124, 196}}; // the PS2's symbol colours
+    dl->AddCircleFilled(ImVec2(cx, cy), (kFaceD + kFaceR) * u * 1.08f, tcol(0, 0, 0, 0.16f), 48); // the well they sit in
+    for (int i = 0; i < 4; i++) {
+        float x = cx + kFacePos[i][0] * kFaceD * u, y = cy + kFacePos[i][1] * kFaceD * u, r = kFaceR * u, t = 0.11f * u;
+        bool on = (b & kFaceBit[i]) != 0;
+        const int *c = kCol[i];
+        if (on) { // glow
+            dl->AddCircleFilled(ImVec2(x, y), r * 1.32f, tcol(c[0], c[1], c[2], 0.28f), 40);
+        }
+        tglossy(dl, x, y, r, on ? c : NULL, 0.85f, on);
+        dl->AddCircle(ImVec2(x, y), r * 0.92f, tcol(c[0], c[1], c[2], on ? 0.0f : 0.55f), 40, 0.05f * u); // a coloured ring
+        ImU32 sym = on ? tcol(255, 255, 255, 1.0f) : tcol(c[0], c[1], c[2], 1.0f);
+        float s = 0.23f * u;
+        switch (i) {
+        case 0: {
+            ImVec2 p[3] = {{x, y - s * 1.1f}, {x + s * 1.05f, y + s * 0.72f}, {x - s * 1.05f, y + s * 0.72f}};
+            dl->AddPolyline(p, 3, sym, ImDrawFlags_Closed, t);
+            break;
+        }
+        case 1: dl->AddCircle(ImVec2(x, y), s, sym, 28, t); break;
+        case 2:
+            dl->AddLine(ImVec2(x - s, y - s), ImVec2(x + s, y + s), sym, t);
+            dl->AddLine(ImVec2(x - s, y + s), ImVec2(x + s, y - s), sym, t);
+            break;
+        default: dl->AddRect(ImVec2(x - s * 0.85f, y - s * 0.85f), ImVec2(x + s * 0.85f, y + s * 0.85f), sym, 0.0f, 0, t); break;
+        }
+    }
+}
+
+// The PS2's d-pad: four separate arrow-shaped keys around a hollow centre.
+static void tdraw_dpad(ImDrawList *dl, float cx, float cy, float u, unsigned b) {
+    static const unsigned kBit[4] = {TB_UP, TB_RIGHT, TB_DOWN, TB_LEFT};
+    dl->AddCircleFilled(ImVec2(cx, cy), 1.5f * u, tcol(0, 0, 0, 0.16f), 48);
+    for (int d = 0; d < 4; d++) {
+        float a = (float)d * 1.5707963f, ca = cosf(a), sa = sinf(a);
+        // the key pointing up, then turned: inner point, shoulders, outer corners (rounded off)
+        static const float kShape[7][2] = {{0.0f, -0.20f}, {0.42f, -0.58f}, {0.42f, -1.20f}, {0.32f, -1.32f},
+                                           {-0.32f, -1.32f}, {-0.42f, -1.20f}, {-0.42f, -0.58f}};
+        ImVec2 p[7], q[7], sh[7];
+        bool on = (b & kBit[d]) != 0;
+        for (int k = 0; k < 7; k++) {
+            float lx = kShape[k][0] * u, ly = kShape[k][1] * u;
+            p[k] = ImVec2(cx + lx * ca - ly * sa, cy + lx * sa + ly * ca);
+            sh[k] = ImVec2(p[k].x, p[k].y + 0.08f * u);
+            float ix = kShape[k][0] * 0.78f * u, iy = (kShape[k][1] * 0.86f - 0.10f) * u; // (the lit face, inset)
+            q[k] = ImVec2(cx + ix * ca - iy * sa, cy + ix * sa + iy * ca);
+        }
+        dl->AddConvexPolyFilled(sh, 7, tcol(0, 0, 0, 0.35f));
+        dl->AddConvexPolyFilled(p, 7, on ? tcol(225, 225, 235, 0.9f) : tmix(kBody, 255, 255, 255, 0.04f, 0.88f));
+        dl->AddConvexPolyFilled(q, 7, on ? tcol(250, 250, 255, 0.9f) : tmix(kBody, 255, 255, 255, 0.14f, 0.85f));
+        dl->AddPolyline(p, 7, tcol(0, 0, 0, 0.7f), ImDrawFlags_Closed, 0.05f * u);
+        // the arrow printed on the key
+        float m = 0.18f * u, oy = -0.92f * u;
+        ImVec2 t0(0, oy - m), t1(m, oy + m * 0.6f), t2(-m, oy + m * 0.6f), tri[3] = {t0, t1, t2};
+        for (int k = 0; k < 3; k++) {
+            float lx = tri[k].x, ly = tri[k].y;
+            tri[k] = ImVec2(cx + lx * ca - ly * sa, cy + lx * sa + ly * ca);
+        }
+        dl->AddTriangleFilled(tri[0], tri[1], tri[2], on ? tcol(40, 40, 50, 1.0f) : tcol(150, 150, 168, 0.95f));
+    }
+}
+
+// An analog stick: a ring with a grip, the cap with a hollow top and a ring of dots.
+static void tdraw_stick(ImDrawList *dl, float cx, float cy, float u, float ax, float ay, bool held) {
+    float R = kStickR * u;
+    dl->AddCircleFilled(ImVec2(cx, cy), R, tcol(0, 0, 0, 0.30f), 56);
+    dl->AddCircle(ImVec2(cx, cy), R, tmix(kBody, 255, 255, 255, 0.15f, 0.85f), 56, 0.10f * u);
+    dl->AddCircle(ImVec2(cx, cy), R * 0.80f, tcol(255, 255, 255, 0.08f), 56, 0.03f * u);
+    float kx = cx + ax * R * 0.62f, ky = cy + ay * R * 0.62f, kr = 0.62f * u;
+    tglossy(dl, kx, ky, kr, held ? kAccent : NULL, 0.35f, false);
+    dl->AddCircleFilled(ImVec2(kx, ky + kr * 0.04f), kr * 0.58f, tmix(kBody, 0, 0, 0, 0.35f, 0.9f), 36); // the hollow top
+    dl->AddCircle(ImVec2(kx, ky), kr * 0.58f, tcol(255, 255, 255, 0.14f), 36, 0.03f * u);
+    for (int k = 0; k < 14; k++) { // the grip's dots
+        float a = (float)k * 0.4487989f;
+        dl->AddCircleFilled(ImVec2(kx + cosf(a) * kr * 0.79f, ky + sinf(a) * kr * 0.79f), kr * 0.05f, tcol(130, 130, 145, 0.8f), 8);
+    }
+    if (held) {
+        dl->AddCircle(ImVec2(kx, ky), kr * 1.06f, tcol(kAccent[0], kAccent[1], kAccent[2], 0.95f), 40, 0.06f * u);
+    }
+}
+
+// A shoulder button: a glossy rounded bar with its name.
+static void tdraw_bar(ImDrawList *dl, float x0, float y0, float x1, float y1, bool on, const char *label, float u) {
+    float rr = (y1 - y0) * 0.45f;
+    dl->AddRectFilled(ImVec2(x0, y0 + 0.07f * u), ImVec2(x1, y1 + 0.07f * u), tcol(0, 0, 0, 0.35f), rr);
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), on ? tcol(225, 225, 235, 0.9f) : tmix(kBody, 255, 255, 255, 0.06f, 0.88f), rr);
+    if (!on) {
+        dl->AddRectFilled(ImVec2(x0 + 0.08f * u, y0 + 0.05f * u), ImVec2(x1 - 0.08f * u, (y0 + y1) * 0.5f), tcol(255, 255, 255, 0.10f), rr * 0.8f);
+    }
+    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), tcol(0, 0, 0, 0.7f), rr, 0, 0.05f * u);
+    ttext(dl, (x0 + x1) * 0.5f, (y0 + y1) * 0.5f, 0.36f * u, on ? tcol(30, 30, 38, 1.0f) : tcol(215, 215, 225, 0.95f), label);
+}
+
+static void touch_draw(void) {
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    unsigned b = 0;
+    float sx[2] = {0, 0}, sy[2] = {0, 0};
+    bool held[2] = {false, false};
+    for (int i = 0; i < sFingerCount && !sTouchEdit; i++) {
+        int e = sFingers[i].el;
+        float ax = 0, ay = 0;
+        if (e < 0) continue;
+        b |= touch_press(e, sFingers[i].x, sFingers[i].y, &ax, &ay);
+        if (e == TE_LSTICK || e == TE_RSTICK) {
+            sx[e - TE_LSTICK] = ax;
+            sy[e - TE_LSTICK] = ay;
+            held[e - TE_LSTICK] = true;
+        }
+    }
+    sTa = (float)sTouchAlpha / 100.0f;
+    if (sTouchEdit && sTa < 0.8f) {
+        sTa = 0.8f;
+    }
+    for (int e = 0; e < TE_COUNT; e++) {
+        float cx, cy, u;
+        touch_geo(e, &cx, &cy, &u);
+        switch (e) {
+        case TE_DPAD: tdraw_dpad(dl, cx, cy, u, b); break;
+        case TE_FACE: tdraw_face(dl, cx, cy, u, b); break;
+        case TE_LSTICK: case TE_RSTICK: tdraw_stick(dl, cx, cy, u, sx[e - TE_LSTICK], sy[e - TE_LSTICK], held[e - TE_LSTICK]); break;
+        case TE_L: case TE_R: {
+            bool l = e == TE_L;
+            float w = 0.85f * u, hh = 0.36f * u, g = 0.08f * u;
+            tdraw_bar(dl, cx - w, cy - 2 * hh - g, cx + w, cy - g, (b & (l ? TB_L2 : TB_R2)) != 0, l ? "L2" : "R2", u);
+            tdraw_bar(dl, cx - w, cy + g, cx + w, cy + 2 * hh + g, (b & (l ? TB_L1 : TB_R1)) != 0, l ? "L1" : "R1", u);
+            break;
+        }
+        case TE_SELECT: { // the PS2's: a small flat bar, its name under it
+            bool on = (b & TB_SELECT) != 0;
+            tdraw_bar(dl, cx - 0.42f * u, cy - 0.14f * u, cx + 0.42f * u, cy + 0.14f * u, on, "", u);
+            ttext(dl, cx, cy + 0.38f * u, 0.24f * u, tcol(200, 200, 212, 0.9f), "SELECT");
+            break;
+        }
+        case TE_START: { // the PS2's: a key pointing right, its name under it
+            bool on = (b & TB_START) != 0;
+            ImVec2 p[3] = {{cx - 0.34f * u, cy - 0.22f * u}, {cx + 0.40f * u, cy}, {cx - 0.34f * u, cy + 0.22f * u}};
+            ImVec2 s[3] = {{p[0].x, p[0].y + 0.07f * u}, {p[1].x, p[1].y + 0.07f * u}, {p[2].x, p[2].y + 0.07f * u}};
+            dl->AddConvexPolyFilled(s, 3, tcol(0, 0, 0, 0.35f));
+            dl->AddConvexPolyFilled(p, 3, on ? tcol(225, 225, 235, 0.9f) : tmix(kBody, 255, 255, 255, 0.10f, 0.9f));
+            dl->AddPolyline(p, 3, tcol(0, 0, 0, 0.7f), ImDrawFlags_Closed, 0.05f * u);
+            ttext(dl, cx, cy + 0.42f * u, 0.24f * u, tcol(200, 200, 212, 0.9f), "START");
+            break;
+        }
+        default: {
+            bool on = (b & (e == TE_L3 ? TB_L3 : TB_R3)) != 0;
+            tglossy(dl, cx, cy, 0.45f * u, on ? kAccent : NULL, 0.8f, on);
+            ttext(dl, cx, cy, 0.30f * u, on ? tcol(255, 255, 255, 1.0f) : tcol(215, 215, 225, 0.95f), kTouchEl[e].name);
+            break;
+        }
+        }
+        if (sTouchEdit) { // the editor: each part's area, the chosen one in orange
+            float hx, hy;
+            touch_extent(e, &hx, &hy);
+            dl->AddRect(ImVec2(cx - hx * u, cy - hy * u), ImVec2(cx + hx * u, cy + hy * u),
+                        e == sTouchSel ? IM_COL32(245, 140, 33, 255) : IM_COL32(255, 255, 255, 110), 0.15f * u, 0,
+                        e == sTouchSel ? 0.08f * u : 0.04f * u);
+        }
+    }
+}
+
+// The editor's panel: what is chosen, larger / smaller, and done.
+static void touch_edit_panel(void) {
+    ImGuiIO &io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, S(8.0f)), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.9f);
+    if (ImGui::Begin("##touchedit", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                                              ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
+        if (sTouchSel >= 0) {
+            ImGui::Text("%s: %d%%", kTouchEl[sTouchSel].name, (int)(sTe[sTouchSel].s * 100.0f + 0.5f));
+        } else {
+            ImGui::TextUnformatted("Drag a part to move it; tap one to resize it");
+        }
+        ImGui::BeginDisabled(sTouchSel < 0);
+        if (ImGui::Button(" - ")) {
+            sTe[sTouchSel].s = fmaxf(0.5f, sTe[sTouchSel].s - 0.1f);
+            touch_save();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(" + ")) {
+            sTe[sTouchSel].s = fminf(2.5f, sTe[sTouchSel].s + 0.1f);
+            touch_save();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Reset layout")) {
+            touch_reset_layout();
+            touch_save();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Done")) {
+            sTouchEdit = false;
+            sTouchSel = -1;
+            touch_save();
+            set_open(true);
+        }
+        ImVec2 p = ImGui::GetWindowPos(), s = ImGui::GetWindowSize();
+        sPanel[0] = p.x; sPanel[1] = p.y; sPanel[2] = p.x + s.x; sPanel[3] = p.y + s.y;
+    }
+    ImGui::End();
+}
+
+// The Controls tab's part for the touch controls.
+static void touch_tab(void) {
+    static const char *const kModes[] = {"Off", "When no controller is connected", "Always"};
+    touch_load();
+    ImGui::SeparatorText("Touch controls");
+    ImGui::SetNextItemWidth(S(300.0f));
+    if (ImGui::Combo("On screen", &sTouchMode, kModes, 3)) {
+        touch_save();
+    }
+    ImGui::SetNextItemWidth(S(300.0f));
+    ImGui::SliderInt("Size", &sTouchSize, 50, 200, "%d%%");
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        touch_save();
+    }
+    ImGui::SetNextItemWidth(S(300.0f));
+    ImGui::SliderInt("Opacity", &sTouchAlpha, 15, 100, "%d%%");
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        touch_save();
+    }
+    if (ImGui::Button("Edit layout (move and resize)")) {
+        set_open(false);
+        sTouchEdit = true;
+        sTouchSel = -1;
+        sFingerCount = 0;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset layout##t")) {
+        touch_reset_layout();
+        touch_save();
+    }
+    ImGui::Separator();
+}
+
 // Dragon Net Battle: the screen behind the main menu's entry. For now only its shape: what a player fills in to
 // host or join. Nothing is sent anywhere yet.
 extern "C" {
@@ -570,7 +1150,7 @@ static void build_net(void) {
     bool open = true;
 
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(560.0f, 0.0f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(fminf(S(560.0f), io.DisplaySize.x * 0.95f), 0.0f), ImGuiCond_Appearing);
     if (pad_pressed(ImGuiKey_GamepadFaceRight)) { // Circle / B: out of the window, as its close button
         open = false;
     }
@@ -591,7 +1171,7 @@ static void build_net(void) {
         }
         ImGui::TextWrapped("Fight a player on another computer. One of you hosts, the other joins with the host's address.");
         ImGui::Spacing();
-        ImGui::SetNextItemWidth(260.0f);
+        ImGui::SetNextItemWidth(S(260.0f));
         {
             static bool read;
             if (!read) { // the name used last time
@@ -614,7 +1194,7 @@ static void build_net(void) {
                                       "small matchmaking service. Works with most home routers. Without it you host on a port,\n"
                                       "which must be reachable from the other player (port forwarding or a virtual network).");
                 ImGui::BeginDisabled(useCode);
-                ImGui::SetNextItemWidth(120.0f);
+                ImGui::SetNextItemWidth(S(120.0f));
                 ImGui::InputText("Port", port, sizeof(port), ImGuiInputTextFlags_CharsDecimal);
                 ImGui::EndDisabled();
                 if (roll < 0) { // the choices of last time (new names: the first ones' defaults were 4 frames and delay 1)
@@ -624,7 +1204,7 @@ static void build_net(void) {
                     if (delay < 0 || delay > 7) { delay = 0; }
                 }
                 ImGui::BeginDisabled(!Port_RollCan());
-                ImGui::SetNextItemWidth(260.0f);
+                ImGui::SetNextItemWidth(S(260.0f));
                 ImGui::Combo("Rollback", &roll, kRoll, 5);
                 ImGui::EndDisabled();
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -632,7 +1212,7 @@ static void build_net(void) {
                                       "other player's buttons arrive. More frames cope with a slower connection and cost\n"
                                       "more processor time. Off: both games wait for each other every frame.");
                 }
-                ImGui::SetNextItemWidth(260.0f);
+                ImGui::SetNextItemWidth(S(260.0f));
                 {
                     static const char *const kDelay[] = {"Automatic (from the connection)", "0 frames", "1 frame", "2 frames", "3 frames",
                                                          "4 frames", "5 frames", "6 frames"};
@@ -654,9 +1234,9 @@ static void build_net(void) {
                         if (timeLimit < 0 || timeLimit > 4) { timeLimit = 3; }
                     }
                     ImGui::Spacing();
-                    ImGui::SetNextItemWidth(260.0f);
+                    ImGui::SetNextItemWidth(S(260.0f));
                     ImGui::Combo("Battle", &battle, kBattle, 5);
-                    ImGui::SetNextItemWidth(260.0f);
+                    ImGui::SetNextItemWidth(S(260.0f));
                     ImGui::Combo("Time limit", &timeLimit, kTime, 5);
                     {
                         if (speed < 0) {
@@ -719,7 +1299,7 @@ static void build_net(void) {
             }
             if (ImGui::BeginTabItem("Join")) {
                 tab = 1;
-                ImGui::SetNextItemWidth(120.0f);
+                ImGui::SetNextItemWidth(S(120.0f));
                 ImGui::InputText("Room code", roomCode, sizeof(roomCode), ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_CharsNoBlank);
                 ImGui::SameLine();
                 if (ImGui::Button("Paste")) { // the letters and digits of what was copied, as capitals
@@ -735,9 +1315,9 @@ static void build_net(void) {
                 }
                 ImGui::TextDisabled("or, without a code, the host's address and port:");
                 ImGui::BeginDisabled(roomCode[0] != '\0');
-                ImGui::SetNextItemWidth(260.0f);
+                ImGui::SetNextItemWidth(S(260.0f));
                 ImGui::InputText("Host's address", address, sizeof(address));
-                ImGui::SetNextItemWidth(120.0f);
+                ImGui::SetNextItemWidth(S(120.0f));
                 ImGui::InputText("Port", port, sizeof(port), ImGuiInputTextFlags_CharsDecimal);
                 ImGui::EndDisabled();
                 ImGui::EndTabItem();
@@ -782,7 +1362,7 @@ static void build_net(void) {
                 } else {
                     ImGui::TextUnformatted(state == 1 ? "Found the room. Connecting to the host..." : tab == 0 ? "Getting a room code..." : "Looking for the room...");
                 }
-                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) {
+                if (ImGui::Button("Cancel", ImVec2(S(120.0f), 0.0f))) {
                     Port_LobbyCancel();
                     lastState = 0;
                 }
@@ -795,7 +1375,7 @@ static void build_net(void) {
                 } else {
                     ImGui::Text("Looking for %s...", address);
                 }
-                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) {
+                if (ImGui::Button("Cancel", ImVec2(S(120.0f), 0.0f))) {
                     Port_LobbyCancel();
                 }
             } else {
@@ -807,7 +1387,7 @@ static void build_net(void) {
                 }
                 bool can = byCode ? (tab == 0 || strlen(roomCode) == 6) : atoi(port) > 0 && (tab == 0 || address[0] != '\0');
                 ImGui::BeginDisabled(!can);
-                if (ImGui::Button(tab == 0 ? "Host a match" : "Join the match", ImVec2(200.0f, 0.0f))) {
+                if (ImGui::Button(tab == 0 ? "Host a match" : "Join the match", ImVec2(S(200.0f), 0.0f))) {
                     if (tab == 0 && roll >= 0) {
                         Port_NetOptions(roll * 2, delay == 0 ? -2 : delay - 1);
                         if (battle >= 0) {
@@ -835,7 +1415,7 @@ static void build_net(void) {
                 }
                 ImGui::EndDisabled();
                 ImGui::SameLine();
-                if (ImGui::Button("Back", ImVec2(120.0f, 0.0f))) {
+                if (ImGui::Button("Back", ImVec2(S(120.0f), 0.0f))) {
                     open = false;
                 }
                 if (state == -2) {
@@ -861,6 +1441,35 @@ void Ui_Toggle(void) {
     if (sReady) {
         set_open(!sOpen);
     }
+}
+
+// Android has no F1: the menu opens and closes with the back gesture or button (SDL hands it over as AC_BACK, the
+// loader asks SDL to keep it), with the controller's PS / Home button, or with L3 and R3 together.
+int Ui_AndroidToggleEvent(const SDL_Event *ev) {
+    if (ev->type == SDL_EVENT_KEY_DOWN && !ev->key.repeat && ev->key.scancode == SDL_SCANCODE_AC_BACK && sTouchEdit) {
+        sTouchEdit = false; // back in the layout editor: done, to the menu it was opened from
+        sTouchSel = -1;
+        touch_save();
+        set_open(true);
+        return 1;
+    }
+    if (ev->type == SDL_EVENT_KEY_DOWN && !ev->key.repeat && ev->key.scancode == SDL_SCANCODE_AC_BACK) {
+        if (sCapKind == 0) {
+            Ui_Toggle();
+            return 1;
+        }
+        return 0;
+    }
+    if (ev->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && sCapKind == 0) {
+        SDL_Gamepad *g = SDL_GetGamepadFromID(ev->gbutton.which);
+        bool combo = g != NULL && (ev->gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_STICK || ev->gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) &&
+                     SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_LEFT_STICK) && SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_RIGHT_STICK);
+        if (ev->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE || combo) {
+            Ui_Toggle();
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static void bind(int value) {
@@ -896,8 +1505,14 @@ int Ui_Event(const SDL_Event *ev) {
                ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev->type == SDL_EVENT_MOUSE_BUTTON_UP || ev->type == SDL_EVENT_MOUSE_WHEEL;
     }
     if (!sOpen) {
-        return 0;
+        int touched = touch_event(ev); // (the on-screen pad)
+        if (sTouchEdit) { // the layout editor: its panel gets the mouse SDL makes of a touch
+            ImGui_ImplSDL3_ProcessEvent(ev);
+            return 1;
+        }
+        return touched;
     }
+    touch_event(ev); // (while the menu is open the pad only lets go of its fingers)
     if (sCapKind != 0) { // the next key or button is the binding; Esc leaves it as it was, Delete clears it
         bool done = false;
         if (ev->type == SDL_EVENT_KEY_DOWN) {
@@ -923,7 +1538,7 @@ int Ui_Event(const SDL_Event *ev) {
         if (ev->type == SDL_EVENT_KEY_DOWN || ev->type == SDL_EVENT_KEY_UP) {
             return 1;
         }
-    } else if (ev->type == SDL_EVENT_KEY_DOWN && ev->key.scancode == SDL_SCANCODE_ESCAPE) {
+    } else if (ev->type == SDL_EVENT_KEY_DOWN && (ev->key.scancode == SDL_SCANCODE_ESCAPE || ev->key.scancode == SDL_SCANCODE_AC_BACK)) {
         set_open(false);
         return 1;
     }
@@ -962,7 +1577,12 @@ static void video_tab(PortVideo &v) {
 
     snprintf(label, sizeof(label), "%dx  (%d x %d)", v.scale, 512 * v.scale, 448 * v.scale);
     if (ImGui::BeginCombo("Internal resolution", label)) {
-        for (int n = 1; n <= 8; n++) {
+#ifdef __ANDROID__
+        const int maxScale = 8; // (as on a PC: what the phone cannot hold goes down by itself, gs_gpu.c)
+#else
+        const int maxScale = 8;
+#endif
+        for (int n = 1; n <= maxScale; n++) {
             snprintf(label, sizeof(label), "%dx  (%d x %d)", n, 512 * n, 448 * n);
             if (ImGui::Selectable(label, n == v.scale)) { v.scale = n; }
         }
@@ -972,12 +1592,26 @@ static void video_tab(PortVideo &v) {
     for (int i = 1; i < (int)(sizeof(aspects) / sizeof(aspects[0])); i++) {
         if (abs(aspects[i].milli - v.aspectMilli) < abs(aspects[best].milli - v.aspectMilli)) { best = i; }
     }
+#ifdef __ANDROID__
+    { // a phone: "Whole screen", the screen's own shape (plat_stub.c), first
+        extern int Port_Setting(const char *name, int def);
+        bool whole = Port_Setting("aspect_screen", 1) != 0;
+        if (ImGui::BeginCombo("Aspect ratio", whole ? "Whole screen" : aspects[best].name)) {
+            if (ImGui::Selectable("Whole screen", whole)) { v.aspectMilli = 0; }
+            for (int i = 0; i < (int)(sizeof(aspects) / sizeof(aspects[0])); i++) {
+                if (ImGui::Selectable(aspects[i].name, !whole && i == best)) { v.aspectMilli = aspects[i].milli + (aspects[i].milli == v.aspectMilli); }
+            }
+            ImGui::EndCombo();
+        }
+    }
+#else
     if (ImGui::BeginCombo("Aspect ratio", aspects[best].name)) {
         for (int i = 0; i < (int)(sizeof(aspects) / sizeof(aspects[0])); i++) {
             if (ImGui::Selectable(aspects[i].name, i == best)) { v.aspectMilli = aspects[i].milli; }
         }
         ImGui::EndCombo();
     }
+#endif
     ImGui::SetItemTooltip("Wider than 4:3 shows more of the fight to the sides. Menus are stretched.");
     if (ImGui::BeginCombo("2D filtering", v.smooth2d ? "Smooth" : "Sharp (console)")) {
         if (ImGui::Selectable("Sharp (console)", !v.smooth2d)) { v.smooth2d = 0; }
@@ -987,10 +1621,12 @@ static void video_tab(PortVideo &v) {
     ImGui::SetItemTooltip("How the display of a fight, the menus and text are drawn above 1x internal resolution.\n"
                           "Sharp: each of the PlayStation 2's pixels is a block. Smooth: as an emulator shows them.\n"
                           "No difference at 1x.");
+#ifndef __ANDROID__ // (a phone: always the whole screen, gs_draw.c)
     bool full = v.fullscreen != 0;
     if (ImGui::Checkbox("Full screen", &full)) { v.fullscreen = full; }
     ImGui::SameLine();
     ImGui::TextDisabled("(F11)");
+#endif
     {
         bool vs = v.vsync != 0, fs = v.frameSkip != 0;
         if (ImGui::Checkbox("V-sync", &vs)) { v.vsync = vs; }
@@ -1014,6 +1650,7 @@ static void video_tab(PortVideo &v) {
     }
     ImGui::SetItemTooltip("Takes effect the next time the game starts.");
     SDL_free(displays);
+#ifndef __ANDROID__ // (a phone: Vulkan only, gs_draw.c)
     {   // which renderer draws the game: Vulkan (the default) or OpenGL 3.3, for machines without a working Vulkan
         static const char *const kApi[] = {"Vulkan", "OpenGL"};
         static int api = -1;
@@ -1030,12 +1667,13 @@ static void video_tab(PortVideo &v) {
             ImGui::TextDisabled("Running now: %s. %s from the next start.", kApi[sGL ? 1 : 0], kApi[api]);
         }
     }
+#endif
     {
         // In-between pictures (gs_draw.c): the fight is computed 30 times a second, as on the console; with this
         // on one more picture is drawn between each two. The game itself, its replays and online play are the same.
         static const char *kSmooth[] = { "Off (30, as the console)", "60 pictures a second", "120 pictures a second", "240 pictures a second" };
         int smooth = gsInterp < 0 ? 0 : gsInterp > 3 ? 3 : gsInterp;
-        ImGui::SetNextItemWidth(416.0f);
+        ImGui::SetNextItemWidth(S(416.0f));
         if (ImGui::Combo("Smooth motion", &smooth, kSmooth, 4)) {
             gsInterp = smooth;
             Port_SettingSave("interp", gsInterp);
@@ -1277,12 +1915,12 @@ static void cheats_tab(void) {
     if (ImGui::BeginPopupModal("Unlock everything?", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("Your records list will be emptied. This cannot be undone once the game saves.");
         ImGui::Spacing();
-        if (ImGui::Button("Unlock", ImVec2(140.0f, 0.0f))) {
+        if (ImGui::Button("Unlock", ImVec2(S(140.0f), 0.0f))) {
             gPortUnlockAll = 1;
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(140.0f, 0.0f))) {
+        if (ImGui::Button("Cancel", ImVec2(S(140.0f), 0.0f))) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -1414,7 +2052,7 @@ static void controls_tab(void) {
     } else {
         snprintf(label, sizeof(label), "Controller %d (not connected)", *slot + 1);
     }
-    ImGui::SetNextItemWidth(300.0f);
+    ImGui::SetNextItemWidth(S(300.0f));
     if (ImGui::BeginCombo("Controller", label)) {
         if (ImGui::Selectable("None", *slot < 0)) { *slot = -1; PortInput_Save(); }
         for (int i = 0; i < (count > 4 ? count : 4); i++) {
@@ -1512,7 +2150,7 @@ static void build(void) {
     }
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     // (760 high where the picture has the room: the Controls tab's sticks and its list of bindings together)
-    ImGui::SetNextWindowSize(ImVec2(640.0f, io.DisplaySize.y >= 800.0f ? 760.0f : 600.0f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(fminf(S(640.0f), io.DisplaySize.x * 0.95f), fminf(S(io.DisplaySize.y >= 800.0f * sUiScale ? 760.0f : 600.0f), io.DisplaySize.y * 0.95f)), ImGuiCond_Appearing);
     if (ImGui::Begin("Settings", &open, ImGuiWindowFlags_NoCollapse)) {
         {
             int latest = update_latest();
@@ -1536,6 +2174,9 @@ static void build(void) {
             if (tab("Audio", 2)) { audio_tab(v); ImGui::EndTabItem(); }
             if (tab("UI", 3)) { ui_tab(v); ImGui::EndTabItem(); }
             if (tab("Controls", 4)) {
+#ifdef __ANDROID__
+                touch_tab();
+#endif
                 bool cs = Port_ClashSquare() != 0;
                 if (ImGui::Checkbox("Clashes: Square counts as a direction", &cs)) {
                     Port_ClashSquareSet(cs);
@@ -1554,7 +2195,7 @@ static void build(void) {
                         }
                     }
                     ImGui::SameLine();
-                    ImGui::SetNextItemWidth(80.0f);
+                    ImGui::SetNextItemWidth(S(80.0f));
                     if (ImGui::Combo("per press", &at, kWorth, 4)) {
                         Port_ClashSquareXSet(kQuarters[at]);
                     }
@@ -1628,7 +2269,12 @@ extern "C" void Port_UiNotice(const char *text) {
 // The meter: frames shown and the game's speed, and in an online match the connection. A setting (Video tab).
 static bool meter_on(void) {
     if (sMeter < 0) {
-        sMeter = getenv("BT3_METER") != NULL ? atoi(getenv("BT3_METER")) != 0 : Port_Setting("meter", 0) != 0;
+#ifdef __ANDROID__
+        const int def = 1; // phones: shown unless switched off (meter=0 in bt3_settings.txt, or BT3_METER=0)
+#else
+        const int def = 0;
+#endif
+        sMeter = getenv("BT3_METER") != NULL ? atoi(getenv("BT3_METER")) != 0 : Port_Setting("meter", def) != 0;
     }
     return sMeter != 0;
 }
@@ -1759,7 +2405,173 @@ static void font_draw(ImDrawList *dl, const FontName *n, float x, float y, float
 
 // Builds this frame's picture of the overlay (the settings or the online window, the line over the picture).
 // false: there is nothing to draw. The same for both back ends; each then draws ImGui's data its own way.
+
+// ---- The Discord status: where the player is, in two lines (port/android/native/loader.c sends them) -----------
+// Read from the game's own state (docs/systems/menu_overlay.md, include/menu/*.h, include/battle/battle.h): the
+// progress block's mode says which screen, or which game mode a fight belongs to; the battle block says whether a
+// fight runs and whether it is paused. Only reads; published with a sequence number (odd while being written).
+extern "C" {
+extern uint32_t gProgress;          // the game's ViewProgress * (a 4-byte pointer)
+int Port_BattleRunning(void);       // src/battle/battle_work.c: 1 while a fight (or its loading) runs
+int Port_BattlePaused(void);        // the pause menu is open
+int Port_SurvivalOpponent(void);    // which opponent of the survival run
+int Battle_GetMode(void);
+int Battle_GetStage(void);
+int BattleReplay_IsActive(void);
+volatile unsigned gPortDiscordSeq;
+char gPortDiscordDetails[128], gPortDiscordState[128];
+}
+
+static int prog(int off) { return gProgress ? *(volatile int32_t *)(uintptr_t)(gProgress + (uint32_t)off) : 0; }
+
+// The sagas of Dragon History, by gProgress->subMenu (episodes 3, 4, 7, 5, 16, 5, 4, 4). (Names by the counts and
+// the game's order; check against the saga select.)
+static const char *const kSagas[8] = {"Saiyan Saga", "Frieza Saga", "Android Saga", "Majin Buu Saga", "Movies",
+                                      "Dragon Ball", "Dragon Ball GT", "What-If Saga"};
+static const char *const kTours[5] = {"World Martial Arts Tournament", "World Martial Arts Big Tournament", "Cell Games",
+                                      "Otherworld Tournament", "Yamcha Game"};
+
+static const char *saga_name(void) {
+    int s = prog(0x34);
+    return s >= 0 && s < 8 ? kSagas[s] : "Dragon History";
+}
+
+static void discord_status(void) {
+    char d[128], st[128], where[96];
+    int mode = prog(0x18);
+    int running = Port_BattleRunning();
+    d[0] = st[0] = where[0] = '\0';
+    if (gProgress == 0) {
+        snprintf(d, sizeof(d), "Starting up");
+    } else if (running) {
+        int bm = Battle_GetMode(), stage = Battle_GetStage();
+        const char *sn = stage >= 0x24 ? PortStages_Name(stage - 0x24) : NameFont_StageName(stage);
+        if (sn != NULL) {
+            snprintf(where, sizeof(where), "%s", sn);
+        }
+        if (Port_NetActive()) {
+            snprintf(d, sizeof(d), "Dragon Net Battle (online)");
+            snprintf(st, sizeof(st), "Fighting online");
+        } else if (bm == 7 || mode <= 2) {
+            snprintf(d, sizeof(d), "Title screen");
+            snprintf(st, sizeof(st), "Watching a demo battle");
+        } else if (bm == 1) {
+            snprintf(d, sizeof(d), "Dragon History: %s", saga_name());
+            snprintf(st, sizeof(st), "Episode %d", prog(0x38) + 1);
+        } else if (mode >= 14 && mode <= 16) {
+            snprintf(d, sizeof(d), "Mission 100");
+            snprintf(st, sizeof(st), "Mission %d", prog(0x63C) * 5 + prog(0x640) + 1);
+        } else if (mode >= 17 && mode <= 19) {
+            snprintf(d, sizeof(d), "Survival: course %d", prog(0x640) + 1);
+            snprintf(st, sizeof(st), "Opponent %d", Port_SurvivalOpponent() + 1);
+        } else if (mode >= 20 && mode <= 23) {
+            int turn = prog(0x674);
+            snprintf(d, sizeof(d), "Sim Dragon");
+            snprintf(st, sizeof(st), "Round %d, battle", turn / 10 + 1);
+        } else if (mode >= 25 && mode <= 27) {
+            snprintf(d, sizeof(d), "Ultimate Battle: ranking");
+            snprintf(st, sizeof(st), "Challenging rank %d", prog(0x688) + 1);
+        } else if (mode >= 28 && mode <= 30) {
+            snprintf(d, sizeof(d), "Ultimate Battle Z");
+            snprintf(st, sizeof(st), "Course %d", prog(0x688) + 1);
+        } else if (bm == 4 || (mode >= 33 && mode <= 35)) {
+            int t = prog(0x84);
+            snprintf(d, sizeof(d), "%s", t >= 0 && t < 5 ? kTours[t] : "World Tournament");
+            snprintf(st, sizeof(st), prog(0x80) ? "Free play" : "Round %d", prog(0x90) + 1);
+        } else if (bm == 5 || mode == 44) {
+            snprintf(d, sizeof(d), "Training");
+            snprintf(st, sizeof(st), "Lesson");
+        } else if (bm == 6 || mode == 45) {
+            snprintf(d, sizeof(d), "Training");
+            snprintf(st, sizeof(st), "Free training");
+        } else if (mode == 56 || BattleReplay_IsActive()) {
+            snprintf(d, sizeof(d), "Data Center");
+            snprintf(st, sizeof(st), "Watching a replay");
+        } else {
+            static const char *const kWho[3] = {"1P vs COM", "1P vs 2P", "COM vs COM"};
+            static const char *const kKind[3] = {"", " (team)", " (DP battle)"};
+            int who = prog(0x620), kind = prog(0x624);
+            snprintf(d, sizeof(d), "Duel%s", kind >= 0 && kind < 3 ? kKind[kind] : "");
+            snprintf(st, sizeof(st), "%s", who >= 0 && who < 3 ? kWho[who] : "Battle");
+        }
+        if (Port_BattlePaused()) { // the pause menu
+            char t[128];
+            snprintf(t, sizeof(t), "Paused - %s", st);
+            snprintf(st, sizeof(st), "%s", t);
+        } else if (where[0] != '\0') {
+            char t[128];
+            snprintf(t, sizeof(t), "%s - %s", st, where);
+            snprintf(st, sizeof(st), "%s", t);
+        }
+    } else {
+        const char *a = NULL, *b = NULL;
+        switch (mode) {
+        case 1: a = "Title screen"; break;
+        case 2: a = "Title screen"; b = "Opening movie"; break;
+        case 3: a = "Dragon History"; b = "Watching the ending"; break;
+        case 4: a = "Main menu"; break;
+        case 6: a = "Dragon History"; b = "Choosing a saga"; break;
+        case 7: snprintf(d, sizeof(d), "Dragon History: %s", saga_name()); b = "Choosing an episode"; break;
+        case 8: snprintf(d, sizeof(d), "Dragon History: %s", saga_name()); b = "Episode results"; break;
+        case 9: snprintf(d, sizeof(d), "Dragon History: %s", saga_name()); b = "End of the saga"; break;
+        case 10: a = "Dragon History"; b = "Saving"; break;
+        case 13: a = "Ultimate Battle"; b = "Choosing a mode"; break;
+        case 14: a = "Mission 100"; b = "Choosing a mission"; break;
+        case 15: a = "Mission 100"; b = "Choosing fighters"; break;
+        case 16: a = "Mission 100"; b = "Results"; break;
+        case 17: a = "Survival"; b = "Choosing a course"; break;
+        case 18: a = "Survival"; b = "Choosing a fighter"; break;
+        case 19: a = "Survival"; b = "Results"; break;
+        case 20: a = "Sim Dragon"; b = "Main screen"; break;
+        case 21: a = "Sim Dragon"; b = "Choosing a fighter"; break;
+        case 22: a = "Sim Dragon"; break;
+        case 23: a = "Sim Dragon"; b = "Results"; break;
+        case 24: a = "Disc Fusion"; break;
+        case 25: a = "Ultimate Battle: ranking"; b = "Choosing a fighter"; break;
+        case 26: a = "Ultimate Battle: ranking"; b = "Ranking ladder"; break;
+        case 27: a = "Ultimate Battle: ranking"; b = "Results"; break;
+        case 28: a = "Ultimate Battle Z"; b = "Choosing a course"; break;
+        case 29: a = "Ultimate Battle Z"; b = "Choosing a fighter"; break;
+        case 30: a = "Ultimate Battle Z"; b = "Results"; break;
+        case 33: a = "World Tournament"; b = "Choosing a tournament"; break;
+        case 34: a = "World Tournament"; b = "Choosing a fighter"; break;
+        case 35: a = "World Tournament"; b = "Tournament bracket"; break;
+        case 38: a = "Duel"; b = "Choosing a battle"; break;
+        case 39: a = "Duel"; b = "Choosing fighters"; break;
+        case 40: a = "Duel"; b = "Choosing teams"; break;
+        case 44: a = "Training"; b = "Choosing a lesson"; break;
+        case 45: a = "Training"; b = "Choosing a fighter"; break;
+        case 48: a = "Evolution Z"; break;
+        case 49: a = "Evolution Z"; b = "Customizing a fighter"; break;
+        case 50: a = "Evolution Z"; b = "In the shop"; break;
+        case 53: a = "Data Center"; break;
+        case 54: a = "Data Center"; b = "Passwords"; break;
+        case 55: a = "Data Center"; b = "Custom fighters"; break;
+        case 56: a = "Data Center"; b = "Replays"; break;
+        case 60: a = "Character Reference"; break;
+        case 62: a = "Options"; break;
+        case 70: a = "Shenron"; b = "Making a wish"; break;
+        default: a = "In the menus"; break;
+        }
+        if (a != NULL) {
+            snprintf(d, sizeof(d), "%s", a);
+        }
+        if (b != NULL) {
+            snprintf(st, sizeof(st), "%s", b);
+        }
+    }
+    if (strcmp(d, gPortDiscordDetails) != 0 || strcmp(st, gPortDiscordState) != 0) {
+        gPortDiscordSeq++; // odd: being written
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        memcpy(gPortDiscordDetails, d, sizeof(d));
+        memcpy(gPortDiscordState, st, sizeof(st));
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        gPortDiscordSeq++;
+    }
+}
+
 static bool frame_build(void) {
+    discord_status();
     if (sReady && gPortNetWindowClose) { // back from an online session: the window it was started from closes
         gPortNetWindowClose = 0;
         gPortNetMenuRequest = 0;
@@ -1790,7 +2602,8 @@ static bool frame_build(void) {
     bool bars = sReady && bars_on();
     meter_count();
     sBuilt = false;
-    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars)) {
+    bool touch = sReady && touch_shown();
+    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !touch)) {
         return false;
     }
     if (sPadHold && sCapKind != 2) { // a binding was taken: the controller works the window again once nothing is held
@@ -1834,6 +2647,12 @@ static bool frame_build(void) {
     }
     if (meter) {
         meter_draw();
+    }
+    if (touch) {
+        touch_draw();
+        if (sTouchEdit) {
+            touch_edit_panel();
+        }
     }
     if (names && GsDraw_HudShown() && gUiPresentW > 0 && gUiPresentH > 0) { // (with the HUD: not over an intro)
         // Under each side's health bar (the game's 512 x 448 page: the bars end at about y 50). The left place is

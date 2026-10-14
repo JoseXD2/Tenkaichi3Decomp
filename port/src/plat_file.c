@@ -5,7 +5,8 @@
  * (partition, index), read in 2048-byte sectors, asynchronously. Here an archive is a FOLDER of loose files made by
  * port/tools/extract_disc.py (<root>/pzs3us1/00042.bin is partition 1, index 42) and a read finishes at once.
  * <root> is the environment variable BT3_DATA, or "gamedata". A file in <root>/mods/<same relative path> is used
- * instead of the original: that is the whole modding mechanism for now.
+ * instead of the original: that is the whole modding mechanism for now. $BT3_MODS can name more such folders, one
+ * per line, checked first and in that order (the Android launcher's list of switched-on mods).
  */
 #include <ctype.h>
 #include <stdint.h>
@@ -42,6 +43,33 @@ static const char *root(void) {
     return r != NULL ? r : "gamedata";
 }
 const char *Port_FileRoot(void) { return root(); }
+
+/* The replacement of the game file `rel` from a mod: the first of the folders in $BT3_MODS (one per line) that has
+   it, else <root>/mods. 1 with its path in `out`, 0 = none. */
+int Port_ModFind(const char *rel, char *out, int size) {
+    const char *list = getenv("BT3_MODS"), *p, *end;
+    FILE *fp;
+
+    for (p = list; p != NULL && *p != '\0'; p = *end != '\0' ? end + 1 : end) {
+        end = strchr(p, '\n');
+        if (end == NULL) {
+            end = p + strlen(p);
+        }
+        if (end > p) {
+            snprintf(out, (size_t)size, "%.*s/%s", (int)(end - p), p, rel);
+            if ((fp = fopen(out, "rb")) != NULL) {
+                fclose(fp);
+                return 1;
+            }
+        }
+    }
+    snprintf(out, (size_t)size, "%s/mods/%s", root(), rel);
+    if ((fp = fopen(out, "rb")) != NULL) {
+        fclose(fp);
+        return 1;
+    }
+    return 0;
+}
 
 /* BT3_FILE_ALIAS="rel=target;rel=target": a file the game asks for (its path under the data root) served from
    somewhere else. A missing archive entry (a new id) gets a host file this way. The manifest of added stages
@@ -124,12 +152,11 @@ int Port_FilePath(int ptid, int flid, const char *fname, char *out, int size) {
             snprintf(rel, sizeof(rel), "%s", a);
         }
     }
-    snprintf(out, (size_t)size, "%s/mods/%s", root(), rel);
-    fp = fopen(out, "rb");
-    if (fp == NULL) {
-        snprintf(out, (size_t)size, "%s/%s", root(), rel);
-        fp = fopen(out, "rb");
+    if (Port_ModFind(rel, out, size)) {
+        return 1;
     }
+    snprintf(out, (size_t)size, "%s/%s", root(), rel);
+    fp = fopen(out, "rb");
     if (fp == NULL) {
         return 0;
     }

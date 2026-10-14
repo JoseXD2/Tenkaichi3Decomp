@@ -538,7 +538,11 @@ static void ImGui_ImplSDLGPU3_CreateGraphicsPipeline()
     rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     rasterizer_state.enable_depth_bias = false;
+#ifdef __ANDROID__
+    rasterizer_state.enable_depth_clip = true; // (Tenkaichi3Decomp: no depth clamping on phones)
+#else
     rasterizer_state.enable_depth_clip = false;
+#endif
 
     SDL_GPUMultisampleState multisample_state = {};
     multisample_state.sample_count = v->MSAASamples;

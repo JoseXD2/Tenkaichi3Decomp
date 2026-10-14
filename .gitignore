@@ -36,3 +36,8 @@ port/build_release/
 /stages/
 /songs/
 /textures/
+
+# Android: the signing key (keep a private backup: updates must be signed with it) and the built APKs
+*.keystore
+*.apk
+/release/

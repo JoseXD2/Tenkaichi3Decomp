@@ -10,4 +10,8 @@ void main() {
     gl_Position = vec4(inPos.x / 512.0 - 1.0, 1.0 - inPos.y / 512.0, inPos.z, 1.0); // SDL GPU: +Y is up in clip space
     vColor = inColor;
     vStq = inStq;
+#ifdef NO_DEPTH_CLAMP
+    // (GPUs without depth clamping, many phones: the depth kept inside the range here instead of clipped)
+    gl_Position.z = clamp(gl_Position.z, 0.0, max(gl_Position.w, 0.0));
+#endif
 }

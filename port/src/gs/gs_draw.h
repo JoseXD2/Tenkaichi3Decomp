@@ -15,6 +15,13 @@ extern int gsScale;
 #define SCALE gsScale
 #define GS_W 1024
 #define GS_H 1024
+/* The part of that GS space a render target's textures actually hold (gs_gpu.c makes them gsTgtW x gsTgtH at SCALE):
+   the game never draws past 640 x 448 (its scissor), so the Vulkan back end keeps 640 x 512 and the GS space keeps
+   its 1024 x 1024 mapping through a viewport larger than the textures. A draw whose scissor reaches past it makes
+   the targets full size again from the next frame (gs_draw.c). BT3_TGT_FULL=1: always full. */
+extern int gsTgtW, gsTgtH;
+#define TGT_COMPACT_W 640
+#define TGT_COMPACT_H 512
 
 #define MAX_VERTS (1 << 20)
 #define MAX_DRAWS (1 << 16)

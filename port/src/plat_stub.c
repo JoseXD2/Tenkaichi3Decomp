@@ -416,6 +416,13 @@ int Port_AspectMilli(void) {
         } else if (getenv("BT3_WINDOW") != NULL && sscanf(getenv("BT3_WINDOW"), "%dx%d", &w, &h) == 2 && h > 0 && w * 2 > h * 3) {
             sAspectMilli = w * 1000 / h;
         }
+#ifdef __ANDROID__
+        /* a phone: the picture as wide as the screen unless another shape was picked (aspect_screen=0). The screen's
+           own shape comes from GameActivity.java (BT3_SCREEN_MILLI, the whole display with the camera cut-out). */
+        if (Port_Setting("aspect_screen", 1) && getenv("BT3_SCREEN_MILLI") != NULL && atoi(getenv("BT3_SCREEN_MILLI")) > 0) {
+            sAspectMilli = atoi(getenv("BT3_SCREEN_MILLI"));
+        }
+#endif
         if (sAspectMilli < 1333) { sAspectMilli = 1333; }
         if (sAspectMilli > 4000) { sAspectMilli = 4000; }
     }
@@ -441,6 +448,15 @@ int Port_AspectMilli(void) {
 }
 /* The settings overlay changes the shape while the game runs: the game asks every frame. */
 void Port_SetAspectMilli(int milli) {
+#ifdef __ANDROID__
+    {   /* 0: the screen's own shape (the settings window's "Whole screen") */
+        extern void Port_SettingSave(const char *name, int value);
+        Port_SettingSave("aspect_screen", milli == 0);
+        if (milli == 0) {
+            milli = getenv("BT3_SCREEN_MILLI") != NULL ? atoi(getenv("BT3_SCREEN_MILLI")) : 1778;
+        }
+    }
+#endif
     sAspectMilli = milli < 1333 ? 1333 : milli > 4000 ? 4000 : milli;
 }
 int Port_IsWide(void) {

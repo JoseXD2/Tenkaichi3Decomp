@@ -120,7 +120,7 @@ uint32_t Port_FastAdd(uint32_t a, uint32_t b) {
  * per component c: ((r0.c * v.x + r1.c * v.y) + r2.c * v.z) + r3.c * v.w      (mtx_apply of src/port/vu0_b.c)
  * r: four rows of four singles, v: four singles, out: four singles. Returns 1 if out was written.
  */
-#ifndef __SSE2__
+#if !defined(__SSE2__) && !defined(__aarch64__)
 int Port_FastMtxApply(const uint32_t *r, const uint32_t *v, uint32_t *out) {
     unsigned bad = 0;
     double vx = wide(v[0], &bad), vy = wide(v[1], &bad), vz = wide(v[2], &bad), vw = wide(v[3], &bad);
@@ -141,6 +141,82 @@ int Port_FastMtxApply(const uint32_t *r, const uint32_t *v, uint32_t *out) {
         float f = (float)acc[c]; /* exact: 24 bits, in range */
         __builtin_memcpy(&out[c], &f, sizeof(f));
     }
+    return 1;
+}
+#elif defined(__aarch64__)
+/*
+ * The same with ARM NEON (phones), two components per register like the SSE2 version below: the functions above
+ * lane by lane, `bad` collecting the lanes' flags as all-ones masks. Checked bit for bit by port/tools/fastvec_check.c
+ * (under qemu-aarch64).
+ */
+#include <arm_neon.h>
+
+typedef struct Pair { float64x2_t lo, hi; } Pair; /* components x y, z w */
+
+static inline uint64x2_t expo2(uint64x2_t u) { /* double exponent fields */
+    return vshrq_n_u64(vshlq_n_u64(u, 1), 53);
+}
+
+static inline uint64x2_t out_of_range2(uint64x2_t u) { /* e != 0 && (e - 897) > 253 */
+    uint64x2_t e = expo2(u);
+    return vandq_u64(vtstq_u64(e, e), vcgtq_u64(vsubq_u64(e, vdupq_n_u64(897)), vdupq_n_u64(253)));
+}
+
+static inline float64x2_t cut2(float64x2_t x, uint64x2_t *bad) {
+    uint64x2_t u = vandq_u64(vreinterpretq_u64_f64(x), vdupq_n_u64(~(uint64_t)0x1FFFFFFF));
+    *bad = vorrq_u64(*bad, out_of_range2(u));
+    return vreinterpretq_f64_u64(u);
+}
+
+static inline float64x2_t add2(float64x2_t a, float64x2_t b, uint64x2_t *bad) {
+    uint64x2_t ua = vreinterpretq_u64_f64(a), ub = vreinterpretq_u64_f64(b);
+    uint64x2_t ea = expo2(ua), eb = expo2(ub);
+    uint64x2_t far = vandq_u64(vandq_u64(vtstq_u64(ea, ea), vtstq_u64(eb, eb)),
+                               vcgtq_u64(vaddq_u64(vsubq_u64(ea, eb), vdupq_n_u64(28)), vdupq_n_u64(56)));
+    uint64x2_t aBig = vcagtq_f64(a, b);
+    uint64x2_t big = vbslq_u64(aBig, ua, ub), u;
+
+    big = vsubq_u64(big, vshlq_n_u64(vshrq_n_u64(veorq_u64(ua, ub), 63), 29));
+    u = vandq_u64(vreinterpretq_u64_f64(vaddq_f64(a, b)), vdupq_n_u64(~(uint64_t)0x1FFFFFFF));
+    u = vbslq_u64(far, big, u);
+    *bad = vorrq_u64(*bad, out_of_range2(u));
+    return vreinterpretq_f64_u64(u);
+}
+
+/* four singles as doubles; flags what is not an ordinary number or a true zero */
+static inline Pair wide4(const uint32_t *p, uint64x2_t *bad) {
+    uint32x4_t u = vld1q_u32(p);
+    uint32x4_t e = vandq_u32(vshrq_n_u32(u, 23), vdupq_n_u32(0xFF));
+    uint32x4_t edge = vorrq_u32(vceqq_u32(e, vdupq_n_u32(0)), vceqq_u32(e, vdupq_n_u32(0xFF)));
+    uint32x4_t nonzero = vtstq_u32(u, vdupq_n_u32(0x7FFFFFFF));
+    float32x4_t f = vreinterpretq_f32_u32(u);
+    Pair r;
+
+    *bad = vorrq_u64(*bad, vreinterpretq_u64_u32(vandq_u32(edge, nonzero)));
+    r.lo = vcvt_f64_f32(vget_low_f32(f));
+    r.hi = vcvt_high_f64_f32(f);
+    return r;
+}
+
+int Port_FastMtxApply(const uint32_t *r, const uint32_t *v, uint32_t *out) {
+    uint64x2_t bad = vdupq_n_u64(0);
+    Pair vv = wide4(v, &bad), r0 = wide4(r, &bad), r1 = wide4(r + 4, &bad), r2 = wide4(r + 8, &bad), r3 = wide4(r + 12, &bad);
+    float64x2_t vx = vdupq_laneq_f64(vv.lo, 0), vy = vdupq_laneq_f64(vv.lo, 1);
+    float64x2_t vz = vdupq_laneq_f64(vv.hi, 0), vw = vdupq_laneq_f64(vv.hi, 1);
+    float64x2_t lo, hi;
+
+    lo = cut2(vmulq_f64(r0.lo, vx), &bad);
+    hi = cut2(vmulq_f64(r0.hi, vx), &bad);
+    lo = add2(lo, cut2(vmulq_f64(r1.lo, vy), &bad), &bad);
+    hi = add2(hi, cut2(vmulq_f64(r1.hi, vy), &bad), &bad);
+    lo = add2(lo, cut2(vmulq_f64(r2.lo, vz), &bad), &bad);
+    hi = add2(hi, cut2(vmulq_f64(r2.hi, vz), &bad), &bad);
+    lo = add2(lo, cut2(vmulq_f64(r3.lo, vw), &bad), &bad);
+    hi = add2(hi, cut2(vmulq_f64(r3.hi, vw), &bad), &bad);
+    if (vmaxvq_u32(vreinterpretq_u32_u64(bad)) != 0) {
+        return 0;
+    }
+    vst1q_f32((float *)out, vcvt_high_f32_f64(vcvt_f32_f64(lo), hi)); /* exact: 24 bits, in range */
     return 1;
 }
 #else

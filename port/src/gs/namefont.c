@@ -49,6 +49,10 @@ static const char *const kStageNames[] = {
     "Cell Game - Noon", "City Ruins - Evening", "City Ruins - Night", "Desert - Evening",
     "Desert - Night", "Mountain Road - Evening", "Planet - Evening", "Random",
 };
+const char *NameFont_StageName(int id) {
+    return id >= 0 && id < (int)(sizeof(kStageNames) / sizeof(kStageNames[0])) - 1 ? kStageNames[id] : NULL;
+}
+
 static const char *const kSongNames[] = {
     "The Meteor", "Vital Burner", "Innocent World", "After The Fire", "Sweet Vibration", "Survive", "Heat Capacity", "Overture",
     "Shine", "Power Scale", "Edge of Spirit", "Caution !", "Menace", "Hot Soul", "High and Scream", "Shootout In Meteor",

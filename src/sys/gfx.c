@@ -81,12 +81,16 @@ extern void PadWatch_Draw(void);
 extern void Vu0_CheckState(void);
 
 /* GS privileged (display) registers. */
-#define GS_PMODE ((volatile u64 *)0x12000000)
-#define GS_DISPFB1 ((volatile u64 *)0x12000070)
-#define GS_DISPLAY1 ((volatile u64 *)0x12000080)
-#define GS_DISPFB2 ((volatile u64 *)0x12000090)
-#define GS_DISPLAY2 ((volatile u64 *)0x120000A0)
-#define GS_EXTWRITE ((volatile u64 *)0x120000D0)
+#ifndef PORT_HW /* (port/include/port_hwaddr.h; the PS2 build: the addresses themselves) */
+#define PORT_HW(a) (a)
+#define PORT_GS(a) (a)
+#endif
+#define GS_PMODE ((volatile u64 *)PORT_GS(0x12000000))
+#define GS_DISPFB1 ((volatile u64 *)PORT_GS(0x12000070))
+#define GS_DISPLAY1 ((volatile u64 *)PORT_GS(0x12000080))
+#define GS_DISPFB2 ((volatile u64 *)PORT_GS(0x12000090))
+#define GS_DISPLAY2 ((volatile u64 *)PORT_GS(0x120000A0))
+#define GS_EXTWRITE ((volatile u64 *)PORT_GS(0x120000D0))
 
 /* Switches the GS to interlaced NTSC field mode and builds the 512x448 double buffer in gGfx. */
 void Gfx_InitDrawEnv(void) {

@@ -90,13 +90,21 @@ def main():
             raise SystemExit(f"{name}: {off} bytes in port/data, {size} in the program")
     # the mark that this program does not work without its list (gPortDataStripped, plat_mem.c)
     secs = mac_sections(exe) if toolchain.MAC else []
-    lines = [] if toolchain.MAC else subprocess.run([PREFIX + "objdump", "-h", str(exe)], capture_output=True, text=True).stdout.splitlines()
-    for k, l in enumerate(lines):
-        m = re.match(r"\s*\d+\s+(\S+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)", l)
-        if m and k + 1 < len(lines) and "CONTENTS" in lines[k + 1]:
-            secs.append((int(m.group(3), 16), int(m.group(5), 16), int(m.group(2), 16)))
-    flag = next((int(l.split()[0], 16) for l in subprocess.run([toolchain.llvm("llvm-nm") if toolchain.MAC else PREFIX + "nm", str(exe)],
-                                                              capture_output=True, text=True).stdout.splitlines()
+    if not toolchain.MAC and image[:4] == b"\x7fELF" and image[4] == 2:  # ELF64 (the ARM builds: llvm-objdump prints other columns)
+        shoff, = struct.unpack_from("<Q", image, 0x28)
+        shentsize, shnum = struct.unpack_from("<HH", image, 0x3A)
+        for k in range(shnum):
+            _, stype, _, va, off_, size = struct.unpack_from("<IIQQQQ", image, shoff + k * shentsize)
+            if stype not in (0, 8) and va:  # sections with contents in the file (not NOBITS)
+                secs.append((va, off_, size))
+    elif not toolchain.MAC:
+        lines = subprocess.run([PREFIX + "objdump", "-h", str(exe)], capture_output=True, text=True).stdout.splitlines()
+        for k, l in enumerate(lines):
+            m = re.match(r"\s*\d+\s+(\S+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)", l)
+            if m and k + 1 < len(lines) and "CONTENTS" in lines[k + 1]:
+                secs.append((int(m.group(3), 16), int(m.group(5), 16), int(m.group(2), 16)))
+    nm = toolchain.llvm("llvm-nm") if toolchain.MAC else ("llvm-nm" + toolchain.SFX) if toolchain.ARM else PREFIX + "nm"
+    flag = next((int(l.split()[0], 16) for l in subprocess.run([nm, str(exe)], capture_output=True, text=True).stdout.splitlines()
                  if l.endswith(" _gPortDataStripped" if toolchain.MAC else " gPortDataStripped")), None)
     off = next((o + flag - va for va, o, size in secs if flag is not None and va <= flag < va + size), None)
     if off is None:

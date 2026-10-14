@@ -29,9 +29,30 @@ long func_002BB390(void) {
  * The game's C library random generator, as in the PS2 executable (rand 0x2A9C78, srand 0x2A9C60: newlib's
  * 64-bit generator). Part of the simulation state. include/port_libm.h renames the game's rand / srand to these.
  */
+
+#include <stdio.h>
 unsigned long long gPortRandNext = 1;
-void Port_Srand(unsigned seed) { gPortRandNext = seed; }
+void Port_Srand(unsigned seed) {
+#ifdef BT3_RAND_TRACE
+    fprintf(stderr, "srand %u from %p\n", seed, __builtin_return_address(0));
+#endif
+    gPortRandNext = seed;
+}
 int Port_Rand(void) {
+#ifdef BT3_RAND_TRACE
+    {   /* (diagnosis, compared between builds: every call with its caller) */
+        static FILE *fp;
+        static int init;
+        extern unsigned gPortVBlanks;
+        if (!init) {
+            init = 1;
+            fp = getenv("BT3_RAND_LOG") ? fopen(getenv("BT3_RAND_LOG"), "w") : NULL;
+        }
+        if (fp) {
+            fprintf(fp, "%u %p\n", gPortVBlanks, __builtin_return_address(0));
+        }
+    }
+#endif
     gPortRandNext = gPortRandNext * 6364136223846793005ull + 1;
     return (int)((gPortRandNext >> 32) & 0x7FFFFFFF);
 }
